@@ -55,6 +55,49 @@ export function isUpdateAngsuranCommand(text) {
   const cmd = String(text || "").trim().toLowerCase();
   return cmd.startsWith("/update-angsuran") || cmd.startsWith("/update angsuran");
 }
+export function isHelpUpdateAngsuranCommand(text) {
+  const v = String(text || "").trim().toLowerCase();
+  return (
+    v === "/update-angsuran" ||
+    v === "/update angsuran" ||
+    v === "/update-angsuran help" ||
+    v === "/update angsuran help" ||
+    v === "/help update-angsuran" ||
+    v === "/help update angsuran" ||
+    v === "/help angsuran" ||
+    v === "/helper update-angsuran" ||
+    v === "/helper angsuran" ||
+    v === "/bantuan update-angsuran" ||
+    v === "/bantuan angsuran" ||
+    v === "/bantuan update angsuran" ||
+    v === "cara update angsuran" ||
+    v === "bantuan update angsuran"
+  );
+}
+export function getUpdateAngsuranHelp() {
+  return (
+    `📚 *BANTUAN UPDATE ANGSURAN*\n\n` +
+    `*Format 1 - Per Anggota:*\n` +
+    `/update-angsuran NO_WA MINGGU STATUS\n\n` +
+    `*Format 2 - Per Hari (Bulk):*\n` +
+    `/update-angsuran HARI MINGGU STATUS\n\n` +
+    `*Keterangan:*\n` +
+    `• NO_WA - Nomor WhatsApp diawali 62 (contoh 6285712345678)\n` +
+    `• HARI - SENIN / SELASA / RABU / KAMIS / JUMAT / SABTU (MINGGU libur)\n` +
+    `• MINGGU - Nomor angsuran ke- (1..tenor)\n` +
+    `• STATUS - SUDAH DIBAYAR | BELUM DIBAYAR (alias: LUNAS, SUDAH BAYAR)\n\n` +
+    `*Contoh:*\n` +
+    `/update-angsuran 6285712345678 1 SUDAH DIBAYAR\n` +
+    `/update-angsuran 6285712345678 2 BELUM DIBAYAR\n` +
+    `/update-angsuran SENIN 2 SUDAH DIBAYAR\n` +
+    `/update-angsuran SELASA 1 BELUM DIBAYAR\n\n` +
+    `*Catatan:*\n` +
+    `• Hanya admin (ADMIN_PHONES) yang bisa pakai command ini\n` +
+    `• Mode HARI akan update semua anggota dengan HARI TAGIHAN = HARI tersebut\n` +
+    `• Kolom STATUS & TANGGAL PEMBAYARAN di Sheet ANGSURAN terupdate otomatis (tanggal WIB hari ini jika SUDAH DIBAYAR)\n` +
+    `• Ketik \`/update-angsuran help\` untuk lihat bantuan ini lagi`
+  );
+}
 function helpText(){
   return "Format salah.\n\nGunakan:\n1) Per anggota:\n/update-angsuran NO_WA MINGGU STATUS\n2) Per hari (bulk):\n/update-angsuran HARI MINGGU STATUS\n\nContoh:\n/update-angsuran 6285712345678 1 SUDAH DIBAYAR\n/update-angsuran SENIN 2 SUDAH DIBAYAR\n/update-angsuran SELASA 1 BELUM DIBAYAR\n\nHARI: SENIN, SELASA, RABU, KAMIS, JUMAT, SABTU\nSTATUS: SUDAH DIBAYAR | BELUM DIBAYAR";
 }
@@ -169,4 +212,4 @@ export async function updateAngsuran(text, senderPhone) {
   const msg = `✅ UPDATE HARI ${hari} MINGGU ${week} → ${status}\n\nTotal anggota ${hari}: ${members.length}\nBerhasil: ${ok}\nSudah sesuai: ${skip}\nTanpa pinjaman: ${noLoan}\nTidak ditemukan: ${notFound}${details.length?"\n\nDetail:\n"+details.join("\n"):""}${fails.length?"\n\nGagal:\n"+fails.slice(0,5).join("\n")+(fails.length>5?`\n+${fails.length-5} lagi`:""):""}`;
   return { success:true, message: msg, hari, week, status, ok, skip };
 }
-export default { isUpdateAngsuranCommand, updateAngsuran };
+export default { isUpdateAngsuranCommand, isHelpUpdateAngsuranCommand, getUpdateAngsuranHelp, updateAngsuran };
