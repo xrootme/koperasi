@@ -1,0 +1,10 @@
+node_modules/
+.env
+credentials/
+*.pem
+*.key
+id_ed25519
+id_ed25519.pub
+.wwebjs_auth/
+media/
+*.log

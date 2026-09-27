@@ -1,0 +1,25 @@
+{
+  "name": "koperasi-jadi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:logs": "pm2 logs koperasi-bot",
+    "setup": "node setup-sheet.js",
+    "setup:admin": "node setup-admin.js",
+    "clean": "node clean.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.6",
+    "dotenv": "^16.4.7",
+    "googleapis": "^144.0.0",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
