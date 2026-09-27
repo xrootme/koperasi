@@ -24,7 +24,7 @@ import { addMember } from "./commands/addMember.js";
 import { isHelpAddCommand, getAddMemberHelp } from "./commands/helperMember.js";
 
 import { isLoanQuestion, checkLoan } from "./commands/checkLoan.js";
-import { isUpdateAngsuranCommand, updateAngsuran } from "./commands/updateAngsuran.js";
+import { isUpdateAngsuranCommand, updateAngsuran, isHelpUpdateAngsuranCommand, getUpdateAngsuranHelp } from "./commands/updateAngsuran.js";
 
 import {
   isMessageProcessed,
@@ -196,6 +196,11 @@ async function startBot() {
           await sock.sendMessage(msg.key.remoteJid, { text: `❌ ${safe}` });
           return;
         }
+      }
+
+      if (isHelpUpdateAngsuranCommand(cleanText)) {
+        await sock.sendMessage(msg.key.remoteJid, { text: getUpdateAngsuranHelp() });
+        return;
       }
 
       // ==================================
