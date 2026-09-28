@@ -1,27 +1,17 @@
-export function parseAmount(value) {
+export function normalizeNumber(value) {
+  return Number(String(value ?? "").replace(/\D/g, ""));
+}
+
+export function toNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return 0;
+  }
+
   if (typeof value === "number") {
     return value;
   }
 
-  if (value === null || value === undefined) {
-    return 0;
-  }
+  const number = Number(String(value).replace(/[^\d-]/g, ""));
 
-  let text = String(value).trim();
-
-  text = text
-    .replace(/rp/gi, "")
-    .replace(/\s/g, "")
-    .replace(/\./g, "")
-    .replace(/,/g, "");
-
-  const amount = Number(text);
-
-  return Number.isFinite(amount) ? amount : 0;
-}
-
-export function clean(value) {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase();
+  return Number.isFinite(number) ? number : 0;
 }
