@@ -96,11 +96,45 @@ export async function getMemberByPhone(phone) {
     return undefined;
   }
 
-  const member = rows.find((row) => {
-    const sheetPhone = normalizePhone(row["NO WA"]);
+  if (!rows || !rows.length) {
+    console.log(`[SHEETS] tidak ada data di sheet ANGGOTA`);
+    return undefined;
+  }
 
-    return sheetPhone === target;
-  });
+  // Cari nama kolom nomor telepon dengan beberapa kemungkinan variasi
+  const possible = [
+    "NO WA",
+    "NO. WA",
+    "NOMOR WA",
+    "WHATSAPP",
+    "NO WHATSAPP",
+    "NO_WA",
+    "PHONE",
+    "TELEPON",
+    "NO",
+  ];
+
+  const headers = Object.keys(rows[0] || {});
+
+  let phoneHeader = headers.find((h) => possible
+    .map((p) => p.toUpperCase())
+    .includes(clean(h).toUpperCase()));
+
+  let member;
+
+  if (phoneHeader) {
+    member = rows.find((row) => normalizePhone(row[phoneHeader]) === target);
+  } else {
+    // Fallback: periksa semua cell pada setiap baris dan cari yang cocok
+    member = rows.find((row) => {
+      for (const key of Object.keys(row)) {
+        const val = row[key];
+        if (!val) continue;
+        if (normalizePhone(val) === target) return true;
+      }
+      return false;
+    });
+  }
 
   if (member) {
     console.log(`[SHEETS] anggota ditemukan: ${member["USER ID"]}`);
