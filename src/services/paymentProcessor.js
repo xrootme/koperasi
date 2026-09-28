@@ -19,7 +19,6 @@ export async function processPayment(payment, loan, installment) {
       };
     }
 
-    // Validasi nominal
     if (paymentAmount < billAmount) {
       const shortfall = billAmount - paymentAmount;
       return {
@@ -32,7 +31,6 @@ export async function processPayment(payment, loan, installment) {
       };
     }
 
-    // Pembayaran sukses
     return {
       success: true,
       message: "✅ Pembayaran berhasil diproses.",

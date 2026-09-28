@@ -19,7 +19,6 @@ export async function getNextInstallment(userId, loanId) {
     return undefined;
   }
 
-  // Cari angsuran yang belum dibayar
   const unpaid = installments.find(
     (row) =>
       clean(row["STATUS"]).toUpperCase() !== "SUDAH DIBAYAR" &&

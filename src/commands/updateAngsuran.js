@@ -1,6 +1,3 @@
-// Placeholder for updateAngsuran command
-// This will be refactored from the legacy commands/updateAngsuran.js
-
 export function isUpdateAngsuranCommand(text) {
   if (!text) return false;
   const normalized = String(text).toLowerCase().trim();
@@ -28,7 +25,6 @@ export function getUpdateAngsuranHelp() {
 }
 
 export async function updateAngsuran(text, adminPhone) {
-  // TODO: Implement update angsuran logic
   return {
     success: false,
     message: "⏳ Fitur update angsuran sedang dalam pengembangan.",
