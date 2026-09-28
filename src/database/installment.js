@@ -1,6 +1,6 @@
 import { getRows } from "./reader.js";
 import { clean, columnLetter } from "./helpers.js";
-import { sheets, spreadsheetId } from "./client.js";
+import { sheets, getSpreadsheetId } from "./client.js";
 
 const SHEET_ANGSURAN = process.env.SHEET_ANGSURAN || "ANGSURAN";
 const SHEET_PINJAMAN = process.env.SHEET_PINJAMAN || "PINJAMAN";
@@ -54,6 +54,7 @@ export async function getInstallmentByWeek(userId, loanId, week) {
 
 export async function markInstallmentPaid(installment, paymentDate) {
   const sheetName = SHEET_ANGSURAN;
+  const sid = getSpreadsheetId();
 
   const rowNumber = installment.__rowNumber;
 
@@ -83,7 +84,7 @@ export async function markInstallmentPaid(installment, paymentDate) {
   const statusColumn = columnLetter(statusColumnIndex + 1);
 
   await sheets.spreadsheets.values.update({
-    spreadsheetId,
+    spreadsheetId: sid,
 
     range: `'${sheetName}'!${statusColumn}${rowNumber}`,
 
@@ -102,7 +103,7 @@ export async function markInstallmentPaid(installment, paymentDate) {
     const paymentDateColumn = columnLetter(paymentDateColumnIndex + 1);
 
     await sheets.spreadsheets.values.update({
-      spreadsheetId,
+      spreadsheetId: sid,
 
       range: `'${sheetName}'!${paymentDateColumn}${rowNumber}`,
 
@@ -120,8 +121,9 @@ export async function markInstallmentPaid(installment, paymentDate) {
 }
 
 async function getHeaders(sheetName) {
+  const sid = getSpreadsheetId();
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${sheetName}'!1:1`,
   });
 
@@ -170,8 +172,9 @@ export async function checkAndUpdateLoanStatus(userId, loanId) {
     return false;
   }
 
+  const sid = getSpreadsheetId();
   const headerResponse = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${SHEET_PINJAMAN}'!1:1`,
   });
 
@@ -189,7 +192,7 @@ export async function checkAndUpdateLoanStatus(userId, loanId) {
   const rowNumber = loanRow.__rowNumber;
 
   await sheets.spreadsheets.values.update({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${SHEET_PINJAMAN}'!${statusColumn}${rowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {

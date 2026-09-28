@@ -173,11 +173,11 @@ export async function getActiveLoan(userId) {
 
   const target = clean(userId).toUpperCase();
 
-  return rows.find(
-    (row) =>
-      clean(row["USER ID"]).toUpperCase() === target &&
-      clean(row["STATUS"]).toUpperCase() === "BERJALAN",
-  );
+  return rows.find((row) => {
+    const isUser = clean(row["USER ID"]).toUpperCase() === target;
+    const status = clean(row["STATUS"]).toUpperCase();
+    return isUser && (status === "BERJALAN" || status === "AKTIF");
+  });
 }
 
 /*

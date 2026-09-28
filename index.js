@@ -14,32 +14,115 @@ import {
   getMemberByPhone,
   getActiveLoan,
   getNextInstallment,
-} from "./database/database.js";
+} from "./src/database/index.js";
 
-import { processPayment } from "./service/paymentProcessor.js";
-import { analyzeTransferImage } from "./ai/gemini.js";
-import { getMessagePhone } from "./utils/phone.js";
-import { rupiah } from "./utils/rupiah.js";
-import { addMember } from "./commands/addMember.js";
-import { isHelpAddCommand, getAddMemberHelp } from "./commands/helperMember.js";
-
-import { isLoanQuestion, checkLoan } from "./commands/checkLoan.js";
-import { isUpdateAngsuranCommand, updateAngsuran, isHelpUpdateAngsuranCommand, getUpdateAngsuranHelp } from "./commands/updateAngsuran.js";
+import { processPayment } from "./src/services/paymentProcessor.js";
+import { analyzeTransferImage } from "./src/ai/gemini.js";
+import { getMessagePhone } from "./src/utils/phone.js";
+import { rupiah } from "./src/utils/rupiah.js";
+import {
+  addMember,
+  isHelpAddCommand,
+  getAddMemberHelp,
+  checkLoan,
+  isLoanQuestion,
+  updateAngsuran,
+  isUpdateAngsuranCommand,
+  isHelpUpdateAngsuranCommand,
+  getUpdateAngsuranHelp,
+} from "./src/commands/index.js";
 
 import {
   isMessageProcessed,
   isImageProcessed,
   markProcessed,
-} from "./utils/processedMessages.js";
+} from "./src/utils/processedMessages.js";
 
 import { isAdminPhone } from "./src/utils/adminAuth.js";
 import { allow } from "./src/utils/rateLimiter.js";
 import { maskPhone, maskId, maskText } from "./src/utils/logger.js";
 
-const ADMIN_PHONES = (process.env.ADMIN_PHONES || "").split(",").map((s) => s.trim()).filter(Boolean);
+// ==========================================
+// GLOBAL ERROR HANDLERS (ANTI-CRASH)
+// ==========================================
+
+process.on("uncaughtException", (error) => {
+  console.error("💥 [UNCAUGHT EXCEPTION]:", error?.stack || error);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("💥 [UNHANDLED REJECTION]:", reason);
+});
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
+
+const ADMIN_PHONES = (process.env.ADMIN_PHONES || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const GEMINI_MAX_BYTES = 8 * 1024 * 1024;
 
+let currentSock = null;
+let isReconnecting = false;
+let reconnectTimer = null;
+
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
+
+function unwrapMessage(rawMsg) {
+  if (!rawMsg) return {};
+  let m = rawMsg;
+  while (
+    m &&
+    (m.ephemeralMessage ||
+      m.viewOnceMessage ||
+      m.viewOnceMessageV2 ||
+      m.documentWithCaptionMessage)
+  ) {
+    m =
+      m.ephemeralMessage?.message ||
+      m.viewOnceMessage?.message ||
+      m.viewOnceMessageV2?.message ||
+      m.documentWithCaptionMessage?.message ||
+      m;
+  }
+  return m || {};
+}
+
+async function safeSendMessage(sock, jid, content) {
+  if (!sock || !jid) return null;
+  try {
+    return await sock.sendMessage(jid, content);
+  } catch (err) {
+    console.error(`❌ Gagal kirim pesan ke ${jid}:`, err?.message || err);
+    return null;
+  }
+}
+
+async function cleanupOldSocket(sock) {
+  if (!sock) return;
+  try {
+    sock.ev?.removeAllListeners();
+    sock.ws?.close();
+  } catch {
+    // Abaikan error cleanup
+  }
+}
+
+// ==========================================
+// MAIN BOT
+// ==========================================
+
 async function startBot() {
+  if (currentSock) {
+    await cleanupOldSocket(currentSock);
+    currentSock = null;
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState("./auth/baileys");
 
   const sock = makeWASocket({
@@ -49,6 +132,8 @@ async function startBot() {
     }),
   });
 
+  currentSock = sock;
+
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", (update) => {
@@ -56,7 +141,6 @@ async function startBot() {
 
     if (qr) {
       console.log("📱 Silakan scan QR WhatsApp...");
-
       qrcode.generate(qr, {
         small: true,
       });
@@ -70,52 +154,73 @@ async function startBot() {
 
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
+      const errorMsg = lastDisconnect?.error?.message || "Unknown error";
 
-      console.log("❌ WHATSAPP TERPUTUS. CODE:", code);
+      console.log(`❌ WHATSAPP TERPUTUS (Code: ${code || "none"}, Error: ${errorMsg})`);
 
-      if (code === DisconnectReason.connectionReplaced) {
-        console.log("⚠️ SESSION WHATSAPP DIGANTIKAN.");
-
-        console.log("⚠️ Tidak melakukan reconnect otomatis.");
-
+      if (code === DisconnectReason.loggedOut) {
+        console.log("⚠️ PERANGKAT TELAH LOGOUT (401). Silakan hapus folder auth/baileys dan scan QR ulang.");
         return;
       }
 
-      console.log("🔄 Reconnect dalam 5 detik...");
+      if (code === DisconnectReason.connectionReplaced) {
+        console.log("⚠️ SESSION WHATSAPP DIGANTIKAN DI TEMPAT LAIN. Bot dihentikan agar tidak terjadi konflik.");
+        return;
+      }
 
-      setTimeout(() => {
-        startBot();
+      if (isReconnecting) return;
+      isReconnecting = true;
+
+      console.log("🔄 Reconnect dalam 5 detik...");
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+
+      reconnectTimer = setTimeout(async () => {
+        isReconnecting = false;
+        try {
+          await startBot();
+        } catch (err) {
+          console.error("❌ Gagal reconnect:", err?.message || err);
+          setTimeout(() => {
+            startBot().catch((e) => console.error("❌ Gagal retry reconnect:", e?.message || e));
+          }, 10_000);
+        }
       }, 5000);
     }
   });
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
-    try {
-      const msg = messages?.[0];
+    let msg = null;
+    let senderJid = null;
 
+    try {
+      msg = messages?.[0];
       if (!msg) return;
 
-      if (msg.key.remoteJid?.endsWith("@g.us")) {
-        return;
+      senderJid = msg.key?.remoteJid;
+      if (!senderJid) return;
+
+      if (senderJid.endsWith("@g.us")) {
+        return; // Abaikan pesan grup
       }
 
-      if (msg.key.fromMe) {
-        return;
+      if (msg.key?.fromMe) {
+        return; // Abaikan pesan bot sendiri
       }
 
       const messageId = msg.key?.id;
-
       if (!messageId) {
         return;
       }
 
+      const actualMessage = unwrapMessage(msg.message);
+
       const text =
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text ||
+        actualMessage?.conversation ||
+        actualMessage?.extendedTextMessage?.text ||
+        actualMessage?.imageMessage?.caption ||
         "";
 
       const cleanText = text.trim();
-
       const senderPhone = getMessagePhone(msg);
 
       if (senderPhone && !allow(`global:${senderPhone}`, 30, 60_000)) {
@@ -127,29 +232,26 @@ async function startBot() {
       console.log("=================================");
       console.log("📩 PESAN MASUK");
       console.log("📱 Nomor:", maskPhone(senderPhone));
-      console.log("💬 Pesan:", maskText(cleanText || "[GAMBAR]", 60));
+      console.log("💬 Pesan:", maskText(cleanText || "[MEDIA/GAMBAR]", 60));
       console.log("🆔 Message ID:", maskId(messageId));
       console.log("=================================");
 
       // ==================================
-      // HELPER /ADD
+      // 1. HELPER /ADD
       // ==================================
-
       if (isHelpAddCommand(cleanText)) {
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: getAddMemberHelp(),
         });
-
         return;
       }
 
       // ==================================
-      // COMMAND /ADD
+      // 2. COMMAND /ADD
       // ==================================
-
       if (cleanText.toLowerCase().startsWith("/add ")) {
         if (!allow(`add:${senderPhone}`, 5, 60_000)) {
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "⏳ Terlalu banyak permintaan. Coba lagi dalam 1 menit.",
           });
           return;
@@ -157,7 +259,7 @@ async function startBot() {
 
         if (!senderPhone || (!isAdminPhone(senderPhone) && !ADMIN_PHONES.includes(senderPhone))) {
           console.log(`🚫 /ADD DITOLAK: ${maskPhone(senderPhone)}`);
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "❌ Anda tidak memiliki izin untuk menambahkan anggota.",
           });
           return;
@@ -169,7 +271,7 @@ async function startBot() {
           const result = await addMember(cleanText, senderPhone);
 
           if (result?.success) {
-            await sock.sendMessage(msg.key.remoteJid, {
+            await safeSendMessage(sock, senderJid, {
               text:
                 `✅ ANGGOTA BERHASIL DITAMBAHKAN\n\n` +
                 `👤 Nama: ${result.name}\n` +
@@ -186,37 +288,38 @@ async function startBot() {
                 `Status: AKTIF`,
             });
           }
-
           return;
         } catch (error) {
           console.error("❌ ERROR COMMAND /ADD:", error?.message || error);
           const safe = String(error?.message || "").includes("sudah terdaftar")
             ? error.message
             : "Gagal menambahkan anggota. Periksa format dan coba lagi.";
-          await sock.sendMessage(msg.key.remoteJid, { text: `❌ ${safe}` });
+          await safeSendMessage(sock, senderJid, { text: `❌ ${safe}` });
           return;
         }
       }
 
+      // ==================================
+      // 3. HELPER /UPDATE-ANGSURAN
+      // ==================================
       if (isHelpUpdateAngsuranCommand(cleanText)) {
-        await sock.sendMessage(msg.key.remoteJid, { text: getUpdateAngsuranHelp() });
+        await safeSendMessage(sock, senderJid, { text: getUpdateAngsuranHelp() });
         return;
       }
 
       // ==================================
-      // UPDATE ANGSURAN (ADMIN)
+      // 4. UPDATE ANGSURAN (ADMIN)
       // ==================================
-
       if (isUpdateAngsuranCommand(cleanText)) {
         if (!allow(`upd:${senderPhone}`, 10, 60_000)) {
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "⏳ Terlalu banyak permintaan update angsuran. Coba lagi nanti.",
           });
           return;
         }
 
         if (!senderPhone || (!isAdminPhone(senderPhone) && !ADMIN_PHONES.includes(senderPhone))) {
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "❌ Anda tidak memiliki izin untuk update angsuran.",
           });
           return;
@@ -225,13 +328,13 @@ async function startBot() {
         try {
           console.log(`🟢 UPDATE ANGSURAN dari ${maskPhone(senderPhone)}`);
           const result = await updateAngsuran(cleanText, senderPhone);
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: result?.message || (result?.success ? "✅ Berhasil" : "❌ Gagal update angsuran."),
           });
           return;
         } catch (error) {
           console.error("❌ ERROR UPDATE ANGSURAN:", error?.message || error);
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "❌ Gagal update angsuran. Periksa format dan coba lagi.",
           });
           return;
@@ -239,18 +342,16 @@ async function startBot() {
       }
 
       // ==================================
-      // CEK PINJAMAN
+      // 5. CEK PINJAMAN
       // ==================================
-
       if (isLoanQuestion(cleanText)) {
         try {
           console.log("🔎 PERTANYAAN PINJAMAN:", cleanText);
 
           if (!senderPhone) {
-            await sock.sendMessage(msg.key.remoteJid, {
+            await safeSendMessage(sock, senderJid, {
               text: "❌ Nomor WhatsApp tidak dapat dikenali.",
             });
-
             return;
           }
 
@@ -258,49 +359,40 @@ async function startBot() {
 
           if (!result?.found) {
             console.log("❌ BUKAN ANGGOTA:", senderPhone);
-
-            await sock.sendMessage(msg.key.remoteJid, {
+            await safeSendMessage(sock, senderJid, {
               text:
                 "❌ Maaf, Anda bukan anggota koperasi.\n\n" +
                 "Nomor WhatsApp Anda belum terdaftar sebagai anggota koperasi.",
             });
-
             return;
           }
 
           console.log(`✅ ANGGOTA DITEMUKAN: ${maskId(result.userId)}`);
-
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: result.message,
           });
-
           return;
         } catch (error) {
           console.error("❌ ERROR CEK PINJAMAN:", error?.message || error);
-
-          await sock.sendMessage(msg.key.remoteJid, {
+          await safeSendMessage(sock, senderJid, {
             text: "❌ Maaf, data pinjaman tidak dapat diambil saat ini.",
           });
-
           return;
         }
       }
 
       // ==================================
-      // DUPLICATE MESSAGE
+      // 6. DUPLICATE MESSAGE
       // ==================================
-
       if (isMessageProcessed(messageId)) {
         console.log("🚫 MESSAGE SUDAH DIPROSES:", maskId(messageId));
         return;
       }
 
       // ==================================
-      // CHECK IMAGE
+      // 7. CHECK IMAGE MESSAGE
       // ==================================
-
-      const imageMessage = msg.message?.imageMessage;
-
+      const imageMessage = actualMessage?.imageMessage;
       if (!imageMessage) {
         return;
       }
@@ -312,245 +404,239 @@ async function startBot() {
       console.log("===============================");
 
       if (senderPhone && !allow(`img:${senderPhone}`, 5, 60_000)) {
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "⏳ Terlalu banyak gambar. Coba lagi dalam 1 menit.",
         });
         return;
       }
 
       // ==================================
-      // MEMBER
+      // 8. CHECK MEMBER
       // ==================================
-
       if (!senderPhone) {
         console.log("❌ Nomor WhatsApp tidak ditemukan");
-
         return;
       }
 
-      const member = await getMemberByPhone(senderPhone);
+      let member;
+      try {
+        member = await getMemberByPhone(senderPhone);
+      } catch (sheetErr) {
+        console.error("❌ Gagal membaca Google Sheets (member):", sheetErr?.message || sheetErr);
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Layanan database sedang sibuk. Silakan coba sesaat lagi.",
+        });
+        return;
+      }
 
       if (!member) {
         console.log("[SHEETS] anggota tidak ditemukan:", maskPhone(senderPhone));
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text:
             "❌ Maaf, Anda bukan anggota koperasi.\n\n" +
             "Nomor WhatsApp Anda belum terdaftar sebagai anggota koperasi.",
         });
-
         return;
       }
 
       console.log("[SHEETS] Anggota ditemukan:", maskId(member["USER ID"]));
-
-      // ==================================
-      // STATUS ANGGOTA
-      // ==================================
 
       const memberStatus = String(member["STATUS"] || "")
         .trim()
         .toUpperCase();
 
       if (memberStatus !== "AKTIF") {
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "❌ Status keanggotaan Anda tidak aktif.",
         });
-
         return;
       }
 
       // ==================================
-      // DOWNLOAD GAMBAR
+      // 9. DOWNLOAD GAMBAR
       // ==================================
-
       console.log("⬇️ Download gambar...");
 
-      const buffer = await downloadMediaMessage(
-        msg,
-        "buffer",
-        {},
-        {
-          logger: pino({
-            level: "silent",
-          }),
-        },
-      );
+      let buffer;
+      try {
+        buffer = await downloadMediaMessage(
+          msg,
+          "buffer",
+          {},
+          {
+            logger: pino({
+              level: "silent",
+            }),
+          },
+        );
+      } catch (dlErr) {
+        console.error("❌ Gagal download gambar:", dlErr?.message || dlErr);
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Gambar tidak dapat diunduh. Silakan kirim ulang bukti transfer.",
+        });
+        return;
+      }
 
       if (!buffer || !Buffer.isBuffer(buffer)) {
         console.log("❌ Gagal download gambar");
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "❌ Gambar tidak dapat dibaca. Silakan kirim ulang bukti transfer.",
         });
-
         return;
       }
 
       if (buffer.length > GEMINI_MAX_BYTES) {
         console.log(`❌ Gambar terlalu besar: ${buffer.length} bytes`);
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "❌ Gambar terlalu besar (maks 8MB). Kompres dan kirim ulang.",
         });
-
         return;
       }
 
       // ==================================
-      // DUPLIKAT GAMBAR
+      // 10. DUPLIKAT GAMBAR
       // ==================================
-
       if (isImageProcessed(buffer)) {
         console.log("🚫 GAMBAR DUPLIKAT");
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text:
             "⚠️ Bukti transfer ini sudah pernah diproses.\n\n" +
             "Jika Anda yakin ini adalah bukti transfer baru, silakan kirim ulang dengan gambar yang berbeda.",
         });
-
         return;
       }
 
       // ==================================
-      // GEMINI
+      // 11. GEMINI
       // ==================================
-
       console.log("🤖 Analisis transfer...");
 
-      const transfer = await analyzeTransferImage(buffer);
-
-      console.log("🤖 Hasil Gemini:", transfer);
-
-      // ==================================
-      // VALIDASI TRANSFER
-      // ==================================
-
-      if (!transfer || transfer.is_transfer_proof !== true) {
-        console.log("❌ Gemini menyatakan bukan bukti transfer");
-
-        await sock.sendMessage(msg.key.remoteJid, {
-          text: "❌ Bukti transfer tidak dapat diverifikasi.",
+      let transfer;
+      try {
+        transfer = await analyzeTransferImage(buffer, imageMessage.mimetype);
+        console.log("🤖 Hasil Gemini:", transfer);
+      } catch (aiErr) {
+        console.error("❌ Gagal analisis Gemini:", aiErr?.message || aiErr);
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Gagal menganalisis bukti transfer via AI. Pastikan foto jelas dan coba lagi.",
         });
-
         return;
       }
 
       // ==================================
-      // NOMINAL
+      // 12. VALIDASI TRANSFER
       // ==================================
+      if (!transfer || transfer.is_transfer_proof !== true) {
+        console.log("❌ Gemini menyatakan bukan bukti transfer");
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Gambar tidak terdeteksi sebagai bukti transfer yang sah.",
+        });
+        return;
+      }
 
+      // ==================================
+      // 13. NOMINAL & TANGGAL
+      // ==================================
       const amount = Number(String(transfer.amount || "").replace(/\D/g, ""));
 
       if (!amount || amount <= 0) {
         console.log("❌ Nominal transfer tidak valid:", transfer.amount);
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "❌ Nominal transfer tidak dapat dibaca.",
         });
-
         return;
       }
 
       console.log("💰 Nominal:", rupiah(amount));
 
-      // ==================================
-      // TANGGAL
-      // ==================================
-
       if (!transfer.date) {
         console.log("❌ Tanggal transfer tidak ditemukan");
-
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text: "❌ Tanggal transfer tidak dapat dibaca.",
         });
-
         return;
       }
 
       // ==================================
-      // PINJAMAN AKTIF
+      // 14. PINJAMAN AKTIF & ANGSURAN
       // ==================================
+      let loan;
+      let installment;
 
-      const loan = await getActiveLoan(member["USER ID"]);
+      try {
+        loan = await getActiveLoan(member["USER ID"]);
 
-      if (!loan) {
-        console.log("❌ Tidak ada pinjaman aktif");
+        if (!loan) {
+          console.log("❌ Tidak ada pinjaman aktif");
+          await safeSendMessage(sock, senderJid, {
+            text: "❌ Tidak ditemukan pinjaman aktif.",
+          });
+          return;
+        }
 
-        await sock.sendMessage(msg.key.remoteJid, {
-          text: "❌ Tidak ditemukan pinjaman aktif.",
+        console.log("💳 Pinjaman:", loan["PINJAMAN ID"]);
+
+        installment = await getNextInstallment(
+          member["USER ID"],
+          loan["PINJAMAN ID"],
+        );
+
+        if (!installment) {
+          await safeSendMessage(sock, senderJid, {
+            text: "✅ Semua angsuran Anda sudah lunas.",
+          });
+          return;
+        }
+
+        console.log("📋 Angsuran:", installment["MINGGU"]);
+        console.log("💰 Tagihan:", rupiah(installment["TAGIHAN"]));
+      } catch (dbErr) {
+        console.error("❌ Gagal membaca data pinjaman/angsuran:", dbErr?.message || dbErr);
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Gagal membaca data pinjaman dari Google Sheets.",
         });
-
         return;
       }
 
-      console.log("💳 Pinjaman:", loan["PINJAMAN ID"]);
-
       // ==================================
-      // ANGSURAN BERIKUTNYA
+      // 15. PROSES PEMBAYARAN
       // ==================================
-
-      const installment = await getNextInstallment(
-        member["USER ID"],
-        loan["PINJAMAN ID"],
-      );
-
-      if (!installment) {
-        await sock.sendMessage(msg.key.remoteJid, {
-          text: "✅ Semua angsuran Anda sudah lunas.",
-        });
-
-        return;
-      }
-
-      console.log("📋 Angsuran:", installment["MINGGU"]);
-
-      console.log("💰 Tagihan:", rupiah(installment["TAGIHAN"]));
-
-      // ==================================
-      // PAYMENT
-      // ==================================
-
       const payment = {
         user_id: member["USER ID"],
-
         loan_id: loan["PINJAMAN ID"],
-
         amount: amount,
-
         transfer_date: transfer.date,
       };
 
       console.log("💰 Nominal transfer:", rupiah(amount));
-
       console.log("📅 Tanggal transfer:", transfer.date);
 
-      // ==================================
-      // PROCESS PAYMENT
-      // ==================================
-
-      const result = await processPayment(payment, loan, installment);
+      let result;
+      try {
+        result = await processPayment(payment, loan, installment);
+      } catch (payErr) {
+        console.error("❌ Error processPayment:", payErr?.message || payErr);
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Gagal memproses data pembayaran.",
+        });
+        return;
+      }
 
       console.log("📊 Hasil pembayaran:", result);
-
-      // ==================================
-      // BERHASIL
-      // ==================================
 
       if (result?.success === true) {
         markProcessed(messageId, buffer);
 
         console.log("✅ PEMBAYARAN BERHASIL");
 
-        await sock.sendMessage(msg.key.remoteJid, {
+        await safeSendMessage(sock, senderJid, {
           text:
             `✅ PEMBAYARAN BERHASIL\n\n` +
             `👤 Nama: ${member["NAMA"]}\n` +
             `💰 Nominal: ${rupiah(amount)}\n` +
             `📅 Tanggal: ${transfer.date}\n` +
             `⏰ Jam: ${transfer.time || "-"}\n` +
-            `📋 Angsuran: Minggu ${installment["MINGGU"]}\n` +
+            `📋 Angsuran: Minggu ke-${installment["MINGGU"]}\n` +
             `🏦 Bank: ${transfer.bank || "-"}\n` +
             `🔖 Referensi: ${transfer.reference || "-"}\n\n` +
             `Status: SUDAH DIBAYAR`,
@@ -559,30 +645,25 @@ async function startBot() {
         return;
       }
 
-      // ==================================
       // PAYMENT GAGAL
-      // ==================================
-
-      console.log("❌ PEMBAYARAN GAGAL");
-
-      await sock.sendMessage(msg.key.remoteJid, {
+      console.log("❌ PEMBAYARAN GAGAL:", result?.status);
+      await safeSendMessage(sock, senderJid, {
         text: result?.message || "❌ Pembayaran tidak berhasil diproses.",
       });
     } catch (error) {
-      console.error("❌ ERROR PROCESS:", error);
-
-      try {
-        if (msg?.key?.remoteJid) {
-          await sock.sendMessage(msg.key.remoteJid, {
-            text: "❌ Terjadi kesalahan saat memproses pesan.",
-          });
-        }
-      } catch {
-        // Abaikan error pengiriman
+      console.error("❌ ERROR PROCESS:", error?.message || error);
+      if (senderJid) {
+        await safeSendMessage(sock, senderJid, {
+          text: "❌ Terjadi kesalahan saat memproses pesan.",
+        });
       }
     }
   });
 }
+
+// ==========================================
+// START APPLICATION
+// ==========================================
 
 startBot().catch((error) => {
   console.error("❌ BOT GAGAL START:", error);

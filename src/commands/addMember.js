@@ -13,28 +13,30 @@ const SHEET_PINJAMAN = process.env.SHEET_PINJAMAN || "PINJAMAN";
 const SHEET_ANGSURAN = process.env.SHEET_ANGSURAN || "ANGSURAN";
 const SHEET_KELOMPOK = process.env.SHEET_KELOMPOK || "KELOMPOK_HARI";
 
+import { ensureSheetsClient, getSpreadsheetId } from "../database/client.js";
+
+let _cachedSheets = null;
+
 function getAuth() {
-  if (!SHEET_ID) {
+  const sid = process.env.GOOGLE_SHEET_ID || getSpreadsheetId();
+  if (!sid) {
     throw new Error("GOOGLE_SHEET_ID belum ada di .env");
   }
 
-  if (!CREDENTIALS_PATH) {
+  const credPath = process.env.GOOGLE_SHEET_CREDENTIALS;
+  if (!credPath || !String(credPath).trim()) {
     throw new Error("GOOGLE_SHEET_CREDENTIALS belum ada di .env");
   }
 
-  const credentialPath = path.resolve(process.cwd(), CREDENTIALS_PATH);
+  const credentialPath = path.resolve(process.cwd(), credPath);
 
-  console.log("🔐 Credential:", credentialPath);
-
-  if (!fs.existsSync(credentialPath)) {
+  if (!fs.existsSync(credentialPath) || fs.statSync(credentialPath).isDirectory()) {
     throw new Error(`File credential tidak ditemukan:\n${credentialPath}`);
   }
 
   let credentials;
-
   try {
     const raw = fs.readFileSync(credentialPath, "utf8");
-
     credentials = JSON.parse(raw);
   } catch (error) {
     throw new Error(
@@ -52,8 +54,6 @@ function getAuth() {
 
   credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
 
-  console.log("👤 Service Account:", credentials.client_email);
-
   return new google.auth.GoogleAuth({
     credentials,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
@@ -61,14 +61,18 @@ function getAuth() {
 }
 
 async function getSheets() {
-  const auth = getAuth();
-
-  const client = await auth.getClient();
-
-  return google.sheets({
-    version: "v4",
-    auth: client,
-  });
+  if (_cachedSheets) return _cachedSheets;
+  try {
+    _cachedSheets = ensureSheetsClient();
+    return _cachedSheets;
+  } catch (err) {
+    const auth = getAuth();
+    _cachedSheets = google.sheets({
+      version: "v4",
+      auth,
+    });
+    return _cachedSheets;
+  }
 }
 
 async function getSheetRows(sheets, sheetName) {

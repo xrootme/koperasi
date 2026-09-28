@@ -1,9 +1,10 @@
-import { sheets, spreadsheetId } from "./client.js";
+import { sheets, getSpreadsheetId } from "./client.js";
 import { clean } from "./helpers.js";
 
 export async function getRows(sheetName) {
+  const sid = getSpreadsheetId();
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${sheetName}'!A:Z`,
   });
 
@@ -29,8 +30,9 @@ export async function getRows(sheetName) {
 }
 
 export async function getHeaders(sheetName) {
+  const sid = getSpreadsheetId();
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${sheetName}'!1:1`,
   });
 

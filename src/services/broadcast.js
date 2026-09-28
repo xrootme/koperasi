@@ -1,6 +1,6 @@
 import { getRows } from "../database/reader.js";
 import { clean, columnLetter } from "../database/helpers.js";
-import { sheets, spreadsheetId } from "../database/client.js";
+import { sheets } from "../database/client.js";
 import { normalizePhone } from "../utils/phone.js";
 import { rupiah } from "../utils/rupiah.js";
 import { getTodayJakarta } from "./dateUtils.js";
