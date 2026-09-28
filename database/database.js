@@ -7,23 +7,32 @@ dotenv.config();
 const credentialsPath = process.env.GOOGLE_SHEET_CREDENTIALS;
 const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
-if (!credentialsPath) {
-  throw new Error("GOOGLE_SHEET_CREDENTIALS belum diisi di .env");
+let _sheets;
+let _auth;
+
+async function ensureSheets() {
+  if (_sheets) return { sheets: _sheets, spreadsheetId };
+
+  if (!credentialsPath) {
+    throw new Error("GOOGLE_SHEET_CREDENTIALS belum diisi di .env");
+  }
+
+  if (!spreadsheetId) {
+    throw new Error("GOOGLE_SHEET_ID belum diisi di .env");
+  }
+
+  _auth = new google.auth.GoogleAuth({
+    keyFile: credentialsPath,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  _sheets = google.sheets({
+    version: "v4",
+    auth: _auth,
+  });
+
+  return { sheets: _sheets, spreadsheetId };
 }
-
-if (!spreadsheetId) {
-  throw new Error("GOOGLE_SHEET_ID belum diisi di .env");
-}
-
-const auth = new google.auth.GoogleAuth({
-  keyFile: credentialsPath,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-
-const sheets = google.sheets({
-  version: "v4",
-  auth,
-});
 
 function clean(value) {
   return String(value ?? "").trim();
@@ -36,8 +45,10 @@ function clean(value) {
  */
 
 export async function getRows(sheetName) {
+  const { sheets, spreadsheetId: sid } = await ensureSheets();
+
   const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${sheetName}'!A:Z`,
   });
 
@@ -209,8 +220,10 @@ export async function checkAndUpdateLoanStatus(userId, loanId) {
     return false;
   }
 
+  const { sheets, spreadsheetId: sid } = await ensureSheets();
+
   const headerResponse = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${process.env.SHEET_PINJAMAN || "PINJAMAN"}'!1:1`,
   });
 
@@ -228,7 +241,7 @@ export async function checkAndUpdateLoanStatus(userId, loanId) {
   const rowNumber = loanRow.__rowNumber;
 
   await sheets.spreadsheets.values.update({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${process.env.SHEET_PINJAMAN || "PINJAMAN"}'!${statusColumn}${rowNumber}`,
     valueInputOption: "USER_ENTERED",
     requestBody: {
@@ -277,8 +290,10 @@ export async function markInstallmentPaid(installment, paymentDate) {
    * kolom STATUS dan TANGGAL PEMBAYARAN.
    */
 
+  const { sheets, spreadsheetId: sid } = await ensureSheets();
+
   const headerResponse = await sheets.spreadsheets.values.get({
-    spreadsheetId,
+    spreadsheetId: sid,
     range: `'${sheetName}'!1:1`,
   });
 
@@ -299,7 +314,7 @@ export async function markInstallmentPaid(installment, paymentDate) {
   const statusColumn = columnLetter(statusColumnIndex + 1);
 
   await sheets.spreadsheets.values.update({
-    spreadsheetId,
+    spreadsheetId: sid,
 
     range: `'${sheetName}'!${statusColumn}${rowNumber}`,
 
@@ -323,7 +338,7 @@ export async function markInstallmentPaid(installment, paymentDate) {
     const paymentDateColumn = columnLetter(paymentDateColumnIndex + 1);
 
     await sheets.spreadsheets.values.update({
-      spreadsheetId,
+      spreadsheetId: sid,
 
       range: `'${sheetName}'!${paymentDateColumn}${rowNumber}`,
 
