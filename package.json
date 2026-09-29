@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop koperasi-bot",
+    "pm2:restart": "pm2 restart koperasi-bot",
     "pm2:logs": "pm2 logs koperasi-bot",
     "setup": "node setup-sheet.js",
+    "schema": "node print-schema.js",
     "setup:admin": "node setup-admin.js",
     "clean": "node clean.js"
   },

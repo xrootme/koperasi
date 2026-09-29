@@ -1,82 +1,22 @@
 import "dotenv/config";
-import fs from "fs";
-import path from "path";
-import { google } from "googleapis";
+import { config } from "../config/index.js";
+import { STATUS } from "../config/sheetSchema.js";
+import {
+  readSheet,
+  findHeader,
+  findHeaderIndex,
+  columnLetter,
+  batchUpdate,
+  clean,
+} from "../services/sheets.js";
 import { normalizePhone } from "../utils/phone.js";
 import { rupiah } from "../utils/rupiah.js";
-import { isValidHari, normalizeHari } from "../utils/hari.js";
-import { ensureSheetsClient, getSpreadsheetId } from "../database/client.js";
+import { normalizeHari, isValidHari } from "../utils/hari.js";
+import { getAdminPhones } from "../utils/adminAuth.js";
 
-const SHEET_ANGGOTA = process.env.SHEET_ANGGOTA || "ANGGOTA";
-const SHEET_PINJAMAN = process.env.SHEET_PINJAMAN || "PINJAMAN";
-const SHEET_ANGSURAN = process.env.SHEET_ANGSURAN || "ANGSURAN";
-
-function getAdminPhones() {
-  return (process.env.ADMIN_PHONES || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-async function getSheets() {
-  try {
-    return ensureSheetsClient();
-  } catch (err) {
-    const credPath = process.env.GOOGLE_SHEET_CREDENTIALS;
-    if (!credPath) throw new Error("GOOGLE_SHEET_CREDENTIALS belum diatur di .env");
-    const resolved = path.resolve(process.cwd(), credPath);
-    if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
-      throw new Error(`File credential tidak ditemukan di: ${resolved}`);
-    }
-    const credentials = JSON.parse(fs.readFileSync(resolved, "utf8"));
-    if (credentials.private_key) {
-      credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
-    }
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    return google.sheets({ version: "v4", auth });
-  }
-}
-
-async function readSheet(sheets, sheetName) {
-  const sid = getSpreadsheetId();
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: sid,
-    range: `${sheetName}!A:Z`,
-  });
-  const rows = response.data.values || [];
-  if (!rows.length) return { headers: [], data: [] };
-  const headers = rows[0].map((h) => String(h || "").trim());
-  const data = rows.slice(1).map((row, i) => {
-    const obj = { __row: i + 2 };
-    headers.forEach((h, j) => (obj[h] = row[j] || ""));
-    return obj;
-  });
-  return { headers, data };
-}
-
-function findHeader(headers, aliases) {
-  for (const alias of aliases) {
-    const idx = headers.findIndex(
-      (h) => String(h).trim().toLowerCase() === alias.toLowerCase()
-    );
-    if (idx !== -1) return idx;
-  }
-  return -1;
-}
-
-function colLetter(idx) {
-  let n = idx + 1;
-  let s = "";
-  while (n > 0) {
-    const m = (n - 1) % 26;
-    s = String.fromCharCode(65 + m) + s;
-    n = Math.floor((n - 1) / 26);
-  }
-  return s;
-}
+const {
+  sheets: { anggota: SHEET_ANGGOTA, pinjaman: SHEET_PINJAMAN, angsuran: SHEET_ANGSURAN },
+} = config;
 
 function getTodayJakarta() {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -118,22 +58,22 @@ export function isHelpUpdateAngsuranCommand(text) {
 
 export function getUpdateAngsuranHelp() {
   return (
-    `📚 *BANTUAN UPDATE ANGSURAN*\n\n` +
-    `*Format 1 - Per Anggota:*\n` +
+    `BANTUAN UPDATE ANGSURAN\n\n` +
+    `Format 1 - Per Anggota:\n` +
     `/update-angsuran NO_WA MINGGU STATUS\n\n` +
-    `*Format 2 - Per Hari (Bulk):*\n` +
+    `Format 2 - Per Hari (Bulk):\n` +
     `/update-angsuran HARI MINGGU STATUS\n\n` +
-    `*Keterangan:*\n` +
+    `Keterangan:\n` +
     `• NO_WA - Nomor WhatsApp diawali 62 (contoh 6285712345678)\n` +
     `• HARI - SENIN / SELASA / RABU / KAMIS / JUMAT / SABTU (MINGGU libur)\n` +
     `• MINGGU - Nomor angsuran ke- (1..tenor)\n` +
     `• STATUS - SUDAH DIBAYAR | BELUM DIBAYAR (alias: LUNAS, SUDAH BAYAR)\n\n` +
-    `*Contoh:*\n` +
+    `Contoh:\n` +
     `/update-angsuran 6285712345678 1 SUDAH DIBAYAR\n` +
     `/update-angsuran 6285712345678 2 BELUM DIBAYAR\n` +
     `/update-angsuran SENIN 2 SUDAH DIBAYAR\n` +
     `/update-angsuran SELASA 1 BELUM DIBAYAR\n\n` +
-    `*Catatan:*\n` +
+    `Catatan:\n` +
     `• Hanya admin yang bisa memakai command ini\n` +
     `• Mode HARI akan mengupdate semua anggota dengan HARI TAGIHAN yang sama\n` +
     `• Kolom STATUS & TANGGAL PEMBAYARAN di Google Sheets terupdate otomatis`
@@ -157,9 +97,13 @@ function helpText() {
 
 function parseStatus(raw) {
   const s = String(raw || "").trim().toUpperCase();
-  if (s === "SUDAH DIBAYAR" || s === "SUDAH BAYAR" || s === "LUNAS" || s === "PAID") return "SUDAH DIBAYAR";
-  if (s === "BELUM DIBAYAR" || s === "BELUM BAYAR" || s === "UNPAID") return "BELUM DIBAYAR";
-  throw new Error("Status harus: SUDAH DIBAYAR atau BELUM DIBAYAR");
+  if (s === STATUS.ANGSURAN_LUNAS || s === "SUDAH BAYAR" || s === "LUNAS" || s === "PAID") {
+    return STATUS.ANGSURAN_LUNAS;
+  }
+  if (s === STATUS.ANGSURAN_BELUM || s === "BELUM BAYAR" || s === "UNPAID") {
+    return STATUS.ANGSURAN_BELUM;
+  }
+  throw new Error(`Status harus: ${STATUS.ANGSURAN_LUNAS} atau ${STATUS.ANGSURAN_BELUM}`);
 }
 
 function parseUpdateCommand(text) {
@@ -192,115 +136,99 @@ function parseUpdateCommand(text) {
 export async function updateAngsuran(text, senderPhone) {
   const adminPhones = getAdminPhones();
   if (adminPhones.length && !adminPhones.includes(senderPhone)) {
-    return { success: false, message: "❌ Anda tidak memiliki izin untuk command ini." };
+    return { success: false, message: "Anda tidak memiliki izin untuk command ini." };
   }
 
   const parsed = parseUpdateCommand(text);
-  const sheets = await getSheets();
-  const sid = getSpreadsheetId();
 
   const [anggotaSheet, pinjamanSheet, angsuranSheet] = await Promise.all([
-    readSheet(sheets, SHEET_ANGGOTA),
-    readSheet(sheets, SHEET_PINJAMAN),
-    readSheet(sheets, SHEET_ANGSURAN),
+    readSheet(SHEET_ANGGOTA),
+    readSheet(SHEET_PINJAMAN),
+    readSheet(SHEET_ANGSURAN),
   ]);
 
-  const aHeaders = anggotaSheet.headers;
-  const aData = anggotaSheet.data;
-  const pHeaders = pinjamanSheet.headers;
-  const pData = pinjamanSheet.data;
-  const anHeaders = angsuranSheet.headers;
-  const anData = angsuranSheet.data;
+  const phoneIdx = findHeaderIndex(anggotaSheet.headers, [
+    "NO WA", "NO. WA", "NOMOR WA", "NO WHATSAPP", "WHATSAPP", "PHONE", "TELEPON",
+  ]);
+  const userIdIdx = findHeaderIndex(anggotaSheet.headers, ["USER ID", "USER_ID", "ID ANGGOTA"]);
+  const nameIdx = findHeaderIndex(anggotaSheet.headers, ["NAMA", "NAMA ANGGOTA"]);
+  const hariIdx = findHeaderIndex(anggotaSheet.headers, ["HARI TAGIHAN", "HARI", "HARI_TAGIHAN"]);
 
-  const phoneIdx = findHeader(aHeaders, ["NO WA", "NO. WA", "NOMOR WA", "NO WHATSAPP", "WHATSAPP", "PHONE", "TELEPON"]);
-  const userIdIdx = findHeader(aHeaders, ["USER ID", "USER_ID", "ID ANGGOTA"]);
-  const nameIdx = findHeader(aHeaders, ["NAMA", "NAMA ANGGOTA"]);
-  const hariIdx = findHeader(aHeaders, ["HARI TAGIHAN", "HARI", "HARI_TAGIHAN"]);
+  const anUserIdIdx = findHeaderIndex(angsuranSheet.headers, ["USER ID", "USER_ID", "ID ANGGOTA"]);
+  const anLoanIdIdx = findHeaderIndex(angsuranSheet.headers, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
+  const weekIdx = findHeaderIndex(angsuranSheet.headers, ["MINGGU", "ANGSURAN", "KE"]);
+  const statusAnIdx = findHeaderIndex(angsuranSheet.headers, ["STATUS", "STATUS ANGSURAN"]);
+  const billIdx = findHeaderIndex(angsuranSheet.headers, ["TAGIHAN", "NOMINAL", "JUMLAH", "CICILAN"]);
+  const dueIdx = findHeaderIndex(angsuranSheet.headers, ["JATUH TEMPO", "JATUH TEMPO TANGGAL", "DUE DATE"]);
+  const payDateIdx = findHeaderIndex(angsuranSheet.headers, ["TANGGAL PEMBAYARAN", "TANGGAL BAYAR", "PEMBAYARAN"]);
 
-  const anUserIdIdx = findHeader(anHeaders, ["USER ID", "USER_ID", "ID ANGGOTA"]);
-  const anLoanIdIdx = findHeader(anHeaders, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
-  const weekIdx = findHeader(anHeaders, ["MINGGU", "ANGSURAN", "KE"]);
-  const statusAnIdx = findHeader(anHeaders, ["STATUS", "STATUS ANGSURAN"]);
-  const billIdx = findHeader(anHeaders, ["TAGIHAN", "NOMINAL", "JUMLAH", "CICILAN"]);
-  const dueIdx = findHeader(anHeaders, ["JATUH TEMPO", "JATUH TEMPO TANGGAL", "DUE DATE"]);
-  const payDateIdx = findHeader(anHeaders, ["TANGGAL PEMBAYARAN", "TANGGAL BAYAR", "PEMBAYARAN"]);
-
-  const loanUserIdIdx = findHeader(pHeaders, ["USER ID", "USER_ID", "ID ANGGOTA"]);
-  const loanIdIdx = findHeader(pHeaders, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
-  const loanStatusIdx = findHeader(pHeaders, ["STATUS", "STATUS PINJAMAN"]);
+  const loanUserIdIdx = findHeaderIndex(pinjamanSheet.headers, ["USER ID", "USER_ID", "ID ANGGOTA"]);
+  const loanIdIdx = findHeaderIndex(pinjamanSheet.headers, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
+  const loanStatusIdx = findHeaderIndex(pinjamanSheet.headers, ["STATUS", "STATUS PINJAMAN"]);
 
   if (phoneIdx === -1 || userIdIdx === -1) throw new Error("Header NO WA / USER ID tidak ditemukan di sheet ANGGOTA.");
   if (weekIdx === -1 || statusAnIdx === -1) throw new Error("Header MINGGU atau STATUS tidak ditemukan di sheet ANGSURAN.");
 
   const isLoanActive = (loanRow, targetUserId) => {
-    const uidMatches = String(loanRow[pHeaders[loanUserIdIdx]] || "").trim().toUpperCase() === targetUserId.toUpperCase();
+    const uidMatches = String(loanRow[pinjamanSheet.headers[loanUserIdIdx]] || "").trim().toUpperCase() === targetUserId.toUpperCase();
     if (!uidMatches) return false;
     if (loanStatusIdx === -1) return true;
-    const st = String(loanRow[pHeaders[loanStatusIdx]] || "").trim().toUpperCase();
+    const st = String(loanRow[pinjamanSheet.headers[loanStatusIdx]] || "").trim().toUpperCase();
     return st === "AKTIF" || st === "BERJALAN";
   };
 
   if (parsed.mode === "phone") {
     const { phone, week, status } = parsed;
-    const member = aData.find((r) => normalizePhone(r[aHeaders[phoneIdx]]) === phone);
+    const member = anggotaSheet.data.find((r) => normalizePhone(r[anggotaSheet.headers[phoneIdx]]) === phone);
     if (!member) throw new Error(`Anggota dengan nomor ${phone} tidak ditemukan.`);
 
-    const userId = String(member[aHeaders[userIdIdx]] || "").trim();
-    const name = nameIdx !== -1 ? String(member[aHeaders[nameIdx]] || "").trim() : "";
+    const userId = String(member[anggotaSheet.headers[userIdIdx]] || "").trim();
+    const name = nameIdx !== -1 ? String(member[anggotaSheet.headers[nameIdx]] || "").trim() : "";
 
-    const loan = pData.find((r) => isLoanActive(r, userId));
+    const loan = pinjamanSheet.data.find((r) => isLoanActive(r, userId));
     if (!loan) throw new Error(`Pinjaman aktif/berjalan untuk ${userId} tidak ditemukan.`);
 
-    const loanId = String(loan[pHeaders[loanIdIdx]] || "").trim();
-    const installment = anData.find(
+    const loanId = String(loan[pinjamanSheet.headers[loanIdIdx]] || "").trim();
+    const installment = angsuranSheet.data.find(
       (r) =>
-        String(r[anHeaders[anUserIdIdx]] || "").trim().toUpperCase() === userId.toUpperCase() &&
-        String(r[anHeaders[anLoanIdIdx]] || "").trim().toUpperCase() === loanId.toUpperCase() &&
-        String(r[anHeaders[weekIdx]] || "").trim() === String(week)
+        String(r[angsuranSheet.headers[anUserIdIdx]] || "").trim().toUpperCase() === userId.toUpperCase() &&
+        String(r[angsuranSheet.headers[anLoanIdIdx]] || "").trim().toUpperCase() === loanId.toUpperCase() &&
+        String(r[angsuranSheet.headers[weekIdx]] || "").trim() === String(week)
     );
 
     if (!installment) throw new Error(`Angsuran minggu ke-${week} untuk pinjaman ${loanId} tidak ditemukan.`);
 
-    const rowNumber = installment.__row;
-    const oldStatus = String(installment[anHeaders[statusAnIdx]] || "").trim().toUpperCase();
-    const billAmount = billIdx !== -1 ? Number(String(installment[anHeaders[billIdx]] || "").replace(/[^\d]/g, "")) || 0 : 0;
-    const dueDate = dueIdx !== -1 ? installment[anHeaders[dueIdx]] : "-";
+    const rowNumber = installment.__rowNumber;
+    const oldStatus = String(installment[angsuranSheet.headers[statusAnIdx]] || "").trim().toUpperCase();
+    const billAmount = billIdx !== -1 ? Number(String(installment[angsuranSheet.headers[billIdx]] || "").replace(/[^\d]/g, "")) || 0 : 0;
+    const dueDate = dueIdx !== -1 ? installment[angsuranSheet.headers[dueIdx]] : "-";
 
     if (oldStatus === status) {
-      return { success: true, message: `ℹ️ Status angsuran minggu ke-${week} sudah ${status}. Tidak ada perubahan.`, userId, loanId, week, status };
+      return { success: true, message: `Status angsuran minggu ke-${week} sudah ${status}. Tidak ada perubahan.`, userId, loanId, week, status };
     }
 
     const updates = [];
-    updates.push({
-      range: `${SHEET_ANGSURAN}!${colLetter(statusAnIdx)}${rowNumber}`,
-      values: [[status]],
-    });
+    updates.push({ range: `${columnLetter(statusAnIdx + 1)}${rowNumber}`, values: [[status]] });
 
     if (payDateIdx !== -1) {
       const val = status === "SUDAH DIBAYAR" ? getTodayJakarta() : "";
-      updates.push({
-        range: `${SHEET_ANGSURAN}!${colLetter(payDateIdx)}${rowNumber}`,
-        values: [[val]],
-      });
+      updates.push({ range: `${columnLetter(payDateIdx + 1)}${rowNumber}`, values: [[val]] });
     }
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sid,
-      requestBody: { valueInputOption: "USER_ENTERED", data: updates },
-    });
+    await batchUpdate(SHEET_ANGSURAN, updates);
 
     return {
       success: true,
       message:
-        `✅ ANGSURAN BERHASIL DIUPDATE\n\n` +
-        `👤 Nama: ${name}\n` +
-        `🆔 User ID: ${userId}\n` +
-        `💳 Pinjaman: ${loanId}\n\n` +
-        `📋 Angsuran: Minggu ke-${week}\n` +
-        `💰 Tagihan: ${rupiah(billAmount)}\n` +
-        `📆 Jatuh Tempo: ${dueDate}\n\n` +
-        `🔄 Status: ${oldStatus} → ${status}` +
-        (status === "SUDAH DIBAYAR" ? `\n📅 Tanggal Bayar: ${getTodayJakarta()}` : ""),
+        `ANGSURAN BERHASIL DIUPDATE\n\n` +
+        `Nama: ${name}\n` +
+        `User ID: ${userId}\n` +
+        `Pinjaman: ${loanId}\n\n` +
+        `Angsuran: Minggu ke-${week}\n` +
+        `Tagihan: ${rupiah(billAmount)}\n` +
+        `Jatuh Tempo: ${dueDate}\n\n` +
+        `Status: ${oldStatus} -> ${status}` +
+        (status === "SUDAH DIBAYAR" ? `\nTanggal Bayar: ${getTodayJakarta()}` : ""),
       userId,
       loanId,
       week,
@@ -309,11 +237,10 @@ export async function updateAngsuran(text, senderPhone) {
     };
   }
 
-  // MODE HARI
   const { hari, week, status } = parsed;
   if (hariIdx === -1) throw new Error("Kolom HARI TAGIHAN tidak ditemukan di Sheet ANGGOTA.");
 
-  const members = aData.filter((r) => normalizeHari(r[aHeaders[hariIdx]]) === hari);
+  const members = anggotaSheet.data.filter((r) => normalizeHari(r[anggotaSheet.headers[hariIdx]]) === hari);
   if (!members.length) throw new Error(`Tidak ada anggota dengan HARI TAGIHAN ${hari}.`);
 
   let ok = 0;
@@ -325,23 +252,23 @@ export async function updateAngsuran(text, senderPhone) {
   const fails = [];
 
   for (const m of members) {
-    const userId = String(m[aHeaders[userIdIdx]] || "").trim();
-    const name = nameIdx !== -1 ? String(m[aHeaders[nameIdx]] || "").trim() : userId;
-    const phone = String(m[aHeaders[phoneIdx]] || "").trim();
+    const userId = String(m[anggotaSheet.headers[userIdIdx]] || "").trim();
+    const name = nameIdx !== -1 ? String(m[anggotaSheet.headers[nameIdx]] || "").trim() : userId;
+    const phone = String(m[anggotaSheet.headers[phoneIdx]] || "").trim();
 
-    const loan = pData.find((r) => isLoanActive(r, userId));
+    const loan = pinjamanSheet.data.find((r) => isLoanActive(r, userId));
     if (!loan) {
       noLoan++;
       fails.push(`${name} (${phone}): tanpa pinjaman aktif`);
       continue;
     }
 
-    const loanId = String(loan[pHeaders[loanIdIdx]] || "").trim();
-    const inst = anData.find(
+    const loanId = String(loan[pinjamanSheet.headers[loanIdIdx]] || "").trim();
+    const inst = angsuranSheet.data.find(
       (r) =>
-        String(r[anHeaders[anUserIdIdx]] || "").trim().toUpperCase() === userId.toUpperCase() &&
-        String(r[anHeaders[anLoanIdIdx]] || "").trim().toUpperCase() === loanId.toUpperCase() &&
-        String(r[anHeaders[weekIdx]] || "").trim() === String(week)
+        String(r[angsuranSheet.headers[anUserIdIdx]] || "").trim().toUpperCase() === userId.toUpperCase() &&
+        String(r[angsuranSheet.headers[anLoanIdIdx]] || "").trim().toUpperCase() === loanId.toUpperCase() &&
+        String(r[angsuranSheet.headers[weekIdx]] || "").trim() === String(week)
     );
 
     if (!inst) {
@@ -350,44 +277,35 @@ export async function updateAngsuran(text, senderPhone) {
       continue;
     }
 
-    const old = String(inst[anHeaders[statusAnIdx]] || "").trim().toUpperCase();
+    const old = String(inst[angsuranSheet.headers[statusAnIdx]] || "").trim().toUpperCase();
     if (old === status) {
       skip++;
       continue;
     }
 
-    const rn = inst.__row;
-    updates.push({
-      range: `${SHEET_ANGSURAN}!${colLetter(statusAnIdx)}${rn}`,
-      values: [[status]],
-    });
+    const rn = inst.__rowNumber;
+    updates.push({ range: `${columnLetter(statusAnIdx + 1)}${rn}`, values: [[status]] });
 
     if (payDateIdx !== -1) {
       const val = status === "SUDAH DIBAYAR" ? getTodayJakarta() : "";
-      updates.push({
-        range: `${SHEET_ANGSURAN}!${colLetter(payDateIdx)}${rn}`,
-        values: [[val]],
-      });
+      updates.push({ range: `${columnLetter(payDateIdx + 1)}${rn}`, values: [[val]] });
     }
 
     ok++;
-    if (details.length < 20) details.push(`• ${name} (${userId})`);
+    if (details.length < 20) details.push(`${name} (${userId})`);
   }
 
   if (!updates.length) {
     if (skip && !notFound && !noLoan) {
-      return { success: true, message: `ℹ️ Semua anggota Hari ${hari} minggu ke-${week} sudah berstatus ${status}.` };
+      return { success: true, message: `Semua anggota Hari ${hari} minggu ke-${week} sudah berstatus ${status}.` };
     }
     throw new Error(`Tidak ada angsuran yang diupdate. Sudah sesuai: ${skip}, Tanpa pinjaman: ${noLoan}, Tidak ditemukan: ${notFound}`);
   }
 
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: sid,
-    requestBody: { valueInputOption: "USER_ENTERED", data: updates },
-  });
+  await batchUpdate(SHEET_ANGSURAN, updates);
 
   const msg =
-    `✅ UPDATE HARI ${hari} MINGGU KE-${week} → ${status}\n\n` +
+    `UPDATE HARI ${hari} MINGGU KE-${week} -> ${status}\n\n` +
     `Total anggota ${hari}: ${members.length}\n` +
     `Berhasil diupdate: ${ok}\n` +
     `Sudah sesuai: ${skip}\n` +

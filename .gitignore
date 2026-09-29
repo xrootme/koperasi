@@ -8,3 +8,6 @@ id_ed25519.pub
 .wwebjs_auth/
 media/
 *.log
+
+auth/
+processed.json

@@ -1,20 +1,8 @@
-import dotenv from "dotenv";
-import { google } from "googleapis";
+import "dotenv/config";
+import { getSheetsClient } from "./src/services/sheets.js";
+import { config } from "./src/config/index.js";
 
-dotenv.config();
-
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const CREDENTIALS = process.env.GOOGLE_SHEET_CREDENTIALS;
-
-function getAuth() {
-  if (!SHEET_ID) throw new Error("GOOGLE_SHEET_ID belum diisi di .env");
-  if (!CREDENTIALS) throw new Error("GOOGLE_SHEET_CREDENTIALS belum diisi di .env");
-
-  return new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-}
+const SHEET_ID = config.google.sheetId;
 
 async function getSheetNames(sheets) {
   const res = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
@@ -36,8 +24,7 @@ async function cleanSheets() {
   console.log("       CLEAN GOOGLE SHEETS");
   console.log("=================================\n");
 
-  const auth = getAuth();
-  const sheets = google.sheets({ version: "v4", auth });
+  const sheets = getSheetsClient();
 
   const names = await getSheetNames(sheets);
 

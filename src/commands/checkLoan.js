@@ -1,151 +1,39 @@
 import "dotenv/config";
-import fs from "fs";
-import path from "path";
-import { google } from "googleapis";
+import { config } from "../config/index.js";
+import { STATUS } from "../config/sheetSchema.js";
+import {
+  readSheet,
+  findHeader,
+  findHeaderIndex,
+  toNumber,
+  clean,
+} from "../services/sheets.js";
 import { normalizePhone } from "../utils/phone.js";
 import { rupiah } from "../utils/rupiah.js";
-import { ensureSheetsClient, getSpreadsheetId } from "../database/client.js";
 
-// ==========================================
-// CONFIG
-// ==========================================
-
-const SHEET_ANGGOTA = process.env.SHEET_ANGGOTA || "ANGGOTA";
-const SHEET_PINJAMAN = process.env.SHEET_PINJAMAN || "PINJAMAN";
-const SHEET_ANGSURAN = process.env.SHEET_ANGSURAN || "ANGSURAN";
-
-// ==========================================
-// GOOGLE AUTH
-// ==========================================
-
-async function getSheets() {
-  try {
-    return ensureSheetsClient();
-  } catch (err) {
-    const credPath = process.env.GOOGLE_SHEET_CREDENTIALS;
-    if (!credPath) throw new Error("GOOGLE_SHEET_CREDENTIALS belum diatur di .env");
-    const resolved = path.resolve(process.cwd(), credPath);
-    if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
-      throw new Error(`File credential tidak ditemukan di: ${resolved}`);
-    }
-    const credentials = JSON.parse(fs.readFileSync(resolved, "utf8"));
-    if (credentials.private_key) {
-      credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
-    }
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    return google.sheets({ version: "v4", auth });
-  }
-}
-
-// ==========================================
-// NORMALIZE TEXT
-// ==========================================
+const {
+  sheets: { anggota: SHEET_ANGGOTA, pinjaman: SHEET_PINJAMAN, angsuran: SHEET_ANGSURAN },
+} = config;
 
 function normalizeText(text) {
-  return String(text || "")
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, " ");
+  return String(text || "").toLowerCase().trim().replace(/\s+/g, " ");
 }
-
-// ==========================================
-// DETEKSI PERTANYAAN PINJAMAN
-// ==========================================
 
 export function isLoanQuestion(text) {
   const value = normalizeText(text);
   if (!value) return false;
 
   const keywords = [
-    "dapat berapa",
-    "dapat berapa ya",
-    "pinjaman saya",
-    "pinjaman berapa",
-    "sisa pinjaman",
-    "sisa angsuran",
-    "angsuran saya",
-    "tagihan saya",
-    "cicilan saya",
-    "berapa pinjaman",
-    "berapa angsuran",
-    "berapa cicilan",
-    "berapa tagihan",
-    "cek pinjaman",
-    "cek angsuran",
-    "cek cicilan",
-    "cek tagihan",
-    "status pinjaman",
-    "status angsuran",
-    "pinjaman",
-    "angsuran",
-    "cicilan",
-    "tagihan",
-    "sudah ke berapa",
-    "ke brp",
+    "dapat berapa", "dapat berapa ya", "pinjaman saya", "pinjaman berapa",
+    "sisa pinjaman", "sisa angsuran", "angsuran saya", "tagihan saya",
+    "cicilan saya", "berapa pinjaman", "berapa angsuran", "berapa cicilan",
+    "berapa tagihan", "cek pinjaman", "cek angsuran", "cek cicilan",
+    "cek tagihan", "status pinjaman", "status angsuran", "pinjaman",
+    "angsuran", "cicilan", "tagihan", "sudah ke berapa", "ke brp",
   ];
 
   return keywords.some((keyword) => value.includes(keyword));
 }
-
-// ==========================================
-// HEADER FINDER
-// ==========================================
-
-function findHeader(headers, aliases) {
-  for (const alias of aliases) {
-    const index = headers.findIndex(
-      (header) => normalizeText(header) === normalizeText(alias),
-    );
-    if (index !== -1) return index;
-  }
-  return -1;
-}
-
-// ==========================================
-// READ SHEET
-// ==========================================
-
-async function readSheet(sheets, sheetName) {
-  const sid = getSpreadsheetId();
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: sid,
-    range: `${sheetName}!A:Z`,
-  });
-
-  const rows = response.data.values || [];
-  if (!rows.length) {
-    return { headers: [], data: [] };
-  }
-
-  const headers = rows[0].map((h) => String(h || "").trim());
-  const data = rows.slice(1).map((row) => {
-    const object = {};
-    headers.forEach((header, index) => {
-      object[header] = row[index] || "";
-    });
-    return object;
-  });
-
-  return { headers, data };
-}
-
-// ==========================================
-// NUMBER
-// ==========================================
-
-function toNumber(value) {
-  if (value === null || value === undefined || value === "") return 0;
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  const number = Number(String(value).replace(/[^\d-]/g, ""));
-  return Number.isFinite(number) ? number : 0;
-}
-
-// ==========================================
-// CHECK LOAN
-// ==========================================
 
 export async function checkLoan(phone) {
   try {
@@ -154,55 +42,40 @@ export async function checkLoan(phone) {
     if (!normalizedPhone) {
       return {
         found: false,
-        message: "❌ Nomor WhatsApp tidak dapat dikenali.",
+        message: "Nomor WhatsApp tidak dapat dikenali.",
       };
     }
 
     console.log("[CHECK LOAN] Nomor:", normalizedPhone);
 
-    const sheets = await getSheets();
-
-    // ======================================
-    // BACA ANGGOTA
-    // ======================================
-
-    const anggotaSheet = await readSheet(sheets, SHEET_ANGGOTA);
-    const anggotaHeaders = anggotaSheet.headers;
-    const anggotaData = anggotaSheet.data;
-
-    const phoneHeaderIndex = findHeader(anggotaHeaders, [
-      "NO WA",
-      "NO. WA",
-      "NOMOR WA",
-      "NO WHATSAPP",
-      "NOMOR WHATSAPP",
-      "PHONE",
-      "TELEPON",
-      "NO",
+    const [anggotaSheet, pinjamanSheet, angsuranSheet] = await Promise.all([
+      readSheet(SHEET_ANGGOTA),
+      readSheet(SHEET_PINJAMAN),
+      readSheet(SHEET_ANGSURAN),
     ]);
 
-    const userIdHeaderIndex = findHeader(anggotaHeaders, [
-      "USER ID",
-      "USERID",
-      "ID ANGGOTA",
+    const phoneHeaderIndex = findHeaderIndex(anggotaSheet.headers, [
+      "NO WA", "NO. WA", "NOMOR WA", "NO WHATSAPP", "NOMOR WHATSAPP",
+      "PHONE", "TELEPON", "NO",
     ]);
 
-    const nameHeaderIndex = findHeader(anggotaHeaders, [
-      "NAMA",
-      "NAMA ANGGOTA",
+    const userIdHeaderIndex = findHeaderIndex(anggotaSheet.headers, [
+      "USER ID", "USERID", "ID ANGGOTA",
     ]);
+
+    const nameHeaderIndex = findHeaderIndex(anggotaSheet.headers, ["NAMA", "NAMA ANGGOTA"]);
 
     let member;
 
     if (phoneHeaderIndex !== -1) {
-      const phoneHeader = anggotaHeaders[phoneHeaderIndex];
-      member = anggotaData.find(
+      const phoneHeader = anggotaSheet.headers[phoneHeaderIndex];
+      member = anggotaSheet.data.find(
         (row) => normalizePhone(row[phoneHeader]) === normalizedPhone,
       );
     } else {
-      // Fallback scanning all cells
-      member = anggotaData.find((row) => {
+      member = anggotaSheet.data.find((row) => {
         for (const k of Object.keys(row)) {
+          if (k === "__rowNumber") continue;
           if (normalizePhone(row[k]) === normalizedPhone) return true;
         }
         return false;
@@ -214,22 +87,18 @@ export async function checkLoan(phone) {
       return {
         found: false,
         message:
-          "❌ Maaf, Anda bukan anggota koperasi.\n\n" +
+          "Maaf, Anda bukan anggota koperasi.\n\n" +
           "Nomor WhatsApp Anda belum terdaftar sebagai anggota koperasi.",
       };
     }
 
-    const userIdHeader = userIdHeaderIndex !== -1 ? anggotaHeaders[userIdHeaderIndex] : "USER ID";
-    const nameHeader = nameHeaderIndex !== -1 ? anggotaHeaders[nameHeaderIndex] : null;
+    const userIdHeader = userIdHeaderIndex !== -1 ? anggotaSheet.headers[userIdHeaderIndex] : "USER ID";
+    const nameHeader = nameHeaderIndex !== -1 ? anggotaSheet.headers[nameHeaderIndex] : null;
 
     const userId = String(member[userIdHeader] || "").trim();
     const name = nameHeader ? String(member[nameHeader] || "").trim() : "";
 
     console.log("[CHECK LOAN] Anggota ditemukan:", userId, name);
-
-    // ======================================
-    // CEK STATUS ANGGOTA
-    // ======================================
 
     const status = String(member["STATUS"] || "").trim().toUpperCase();
 
@@ -239,63 +108,27 @@ export async function checkLoan(phone) {
         userId,
         name,
         message:
-          `❌ Halo ${name || "Anggota"},\n\n` +
+          `Halo ${name || "Anggota"},\n\n` +
           `Status keanggotaan Anda: ${status}\n\n` +
           `Silakan hubungi pengurus koperasi untuk informasi lebih lanjut.`,
       };
     }
 
-    // ======================================
-    // BACA PINJAMAN
-    // ======================================
-
-    const pinjamanSheet = await readSheet(sheets, SHEET_PINJAMAN);
-    const pinjamanHeaders = pinjamanSheet.headers;
-    const pinjamanData = pinjamanSheet.data;
-
-    const loanUserIdIndex = findHeader(pinjamanHeaders, [
-      "USER ID",
-      "USERID",
-      "ID ANGGOTA",
+    const loanUserIdIndex = findHeaderIndex(pinjamanSheet.headers, ["USER ID", "USERID", "ID ANGGOTA"]);
+    const loanIdIndex = findHeaderIndex(pinjamanSheet.headers, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
+    const loanAmountIndex = findHeaderIndex(pinjamanSheet.headers, [
+      "PINJAMAN", "JUMLAH PINJAMAN", "NOMINAL PINJAMAN", "JUMLAH", "POKOK", "AMOUNT",
     ]);
+    const tenorIndex = findHeaderIndex(pinjamanSheet.headers, ["TENOR", "TENOR MINGGU", "LAMA PINJAMAN"]);
+    const loanStatusIndex = findHeaderIndex(pinjamanSheet.headers, ["STATUS", "STATUS PINJAMAN"]);
 
-    const loanIdIndex = findHeader(pinjamanHeaders, [
-      "PINJAMAN ID",
-      "ID PINJAMAN",
-      "LOAN ID",
-    ]);
+    const loanUserIdHeader = loanUserIdIndex !== -1 ? pinjamanSheet.headers[loanUserIdIndex] : "USER ID";
+    const loanIdHeader = loanIdIndex !== -1 ? pinjamanSheet.headers[loanIdIndex] : "PINJAMAN ID";
+    const loanAmountHeader = loanAmountIndex !== -1 ? pinjamanSheet.headers[loanAmountIndex] : null;
+    const tenorHeader = tenorIndex !== -1 ? pinjamanSheet.headers[tenorIndex] : null;
+    const loanStatusHeader = loanStatusIndex !== -1 ? pinjamanSheet.headers[loanStatusIndex] : null;
 
-    const loanAmountIndex = findHeader(pinjamanHeaders, [
-      "PINJAMAN",
-      "JUMLAH PINJAMAN",
-      "NOMINAL PINJAMAN",
-      "JUMLAH",
-      "POKOK",
-      "AMOUNT",
-    ]);
-
-    const tenorIndex = findHeader(pinjamanHeaders, [
-      "TENOR",
-      "TENOR MINGGU",
-      "LAMA PINJAMAN",
-    ]);
-
-    const loanStatusIndex = findHeader(pinjamanHeaders, [
-      "STATUS",
-      "STATUS PINJAMAN",
-    ]);
-
-    const loanUserIdHeader = loanUserIdIndex !== -1 ? pinjamanHeaders[loanUserIdIndex] : "USER ID";
-    const loanIdHeader = loanIdIndex !== -1 ? pinjamanHeaders[loanIdIndex] : "PINJAMAN ID";
-    const loanAmountHeader = loanAmountIndex !== -1 ? pinjamanHeaders[loanAmountIndex] : null;
-    const tenorHeader = tenorIndex !== -1 ? pinjamanHeaders[tenorIndex] : null;
-    const loanStatusHeader = loanStatusIndex !== -1 ? pinjamanHeaders[loanStatusIndex] : null;
-
-    // ======================================
-    // CARI PINJAMAN MILIK ANGGOTA
-    // ======================================
-
-    const memberLoans = pinjamanData.filter(
+    const memberLoans = pinjamanSheet.data.filter(
       (row) =>
         String(row[loanUserIdHeader] || "").trim().toUpperCase() === userId.toUpperCase(),
     );
@@ -306,69 +139,49 @@ export async function checkLoan(phone) {
         userId,
         name,
         message:
-          `👋 Halo ${name || "Anggota"},\n\n` +
-          `❌ Anda belum memiliki data pinjaman aktif.`,
+          `Halo ${name || "Anggota"},\n\n` +
+          `Anda belum memiliki data pinjaman aktif.`,
       };
     }
-
-    // ======================================
-    // PILIH PINJAMAN AKTIF / BERJALAN
-    // ======================================
 
     let loan = memberLoans.find((row) => {
       if (!loanStatusHeader) return true;
       const st = String(row[loanStatusHeader] || "").trim().toUpperCase();
-      return st === "AKTIF" || st === "BERJALAN";
+      return st === "AKTIF" || st === STATUS.PINJAMAN_BERJALAN;
     });
 
-    if (!loan) {
-      loan = memberLoans[memberLoans.length - 1];
-    }
+    if (!loan) loan = memberLoans[memberLoans.length - 1];
 
     const loanId = String(loan[loanIdHeader] || "").trim();
     const loanAmount = loanAmountHeader ? toNumber(loan[loanAmountHeader]) : 0;
     const tenor = tenorHeader ? loan[tenorHeader] : "-";
-    const loanStatus = loanStatusHeader ? String(loan[loanStatusHeader] || "").trim() : "AKTIF";
+    const loanStatus = loanStatusHeader
+      ? String(loan[loanStatusHeader] || "").trim() || STATUS.PINJAMAN_BERJALAN
+      : STATUS.PINJAMAN_BERJALAN;
 
     console.log("[CHECK LOAN] Pinjaman:", loanId);
 
-    // ======================================
-    // BACA ANGSURAN
-    // ======================================
+    const angsuranUserIdIndex = findHeaderIndex(angsuranSheet.headers, ["USER ID", "USERID", "ID ANGGOTA"]);
+    const angsuranLoanIdIndex = findHeaderIndex(angsuranSheet.headers, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
+    const mingguIndex = findHeaderIndex(angsuranSheet.headers, ["MINGGU", "ANGSURAN", "KE", "CICILAN KE"]);
+    const tagihanIndex = findHeaderIndex(angsuranSheet.headers, ["TAGIHAN", "NOMINAL", "JUMLAH", "CICILAN"]);
+    const statusAngsuranIndex = findHeaderIndex(angsuranSheet.headers, ["STATUS", "STATUS ANGSURAN"]);
+    const jatuhTempoIndex = findHeaderIndex(angsuranSheet.headers, ["JATUH TEMPO", "JATUH TEMPO TANGGAL", "DUE DATE"]);
+    const pembayaranTanggalIndex = findHeaderIndex(angsuranSheet.headers, ["TANGGAL PEMBAYARAN", "TANGGAL BAYAR", "PEMBAYARAN"]);
 
-    const angsuranSheet = await readSheet(sheets, SHEET_ANGSURAN);
-    const angsuranHeaders = angsuranSheet.headers;
-    const angsuranData = angsuranSheet.data;
+    const angsuranUserIdHeader = angsuranUserIdIndex !== -1 ? angsuranSheet.headers[angsuranUserIdIndex] : "USER ID";
+    const angsuranLoanIdHeader = angsuranLoanIdIndex !== -1 ? angsuranSheet.headers[angsuranLoanIdIndex] : "PINJAMAN ID";
+    const mingguHeader = mingguIndex !== -1 ? angsuranSheet.headers[mingguIndex] : null;
+    const tagihanHeader = tagihanIndex !== -1 ? angsuranSheet.headers[tagihanIndex] : null;
+    const statusAngsuranHeader = statusAngsuranIndex !== -1 ? angsuranSheet.headers[statusAngsuranIndex] : null;
+    const jatuhTempoHeader = jatuhTempoIndex !== -1 ? angsuranSheet.headers[jatuhTempoIndex] : null;
+    const pembayaranTanggalHeader = pembayaranTanggalIndex !== -1 ? angsuranSheet.headers[pembayaranTanggalIndex] : null;
 
-    const angsuranUserIdIndex = findHeader(angsuranHeaders, ["USER ID", "USERID", "ID ANGGOTA"]);
-    const angsuranLoanIdIndex = findHeader(angsuranHeaders, ["PINJAMAN ID", "ID PINJAMAN", "LOAN ID"]);
-    const mingguIndex = findHeader(angsuranHeaders, ["MINGGU", "ANGSURAN", "KE", "CICILAN KE"]);
-    const tagihanIndex = findHeader(angsuranHeaders, ["TAGIHAN", "NOMINAL", "JUMLAH", "CICILAN"]);
-    const statusAngsuranIndex = findHeader(angsuranHeaders, ["STATUS", "STATUS ANGSURAN"]);
-    const jatuhTempoIndex = findHeader(angsuranHeaders, ["JATUH TEMPO", "JATUH TEMPO TANGGAL", "DUE DATE"]);
-    const pembayaranTanggalIndex = findHeader(angsuranHeaders, ["TANGGAL PEMBAYARAN", "TANGGAL BAYAR", "PEMBAYARAN"]);
-
-    const angsuranUserIdHeader = angsuranUserIdIndex !== -1 ? angsuranHeaders[angsuranUserIdIndex] : "USER ID";
-    const angsuranLoanIdHeader = angsuranLoanIdIndex !== -1 ? angsuranHeaders[angsuranLoanIdIndex] : "PINJAMAN ID";
-    const mingguHeader = mingguIndex !== -1 ? angsuranHeaders[mingguIndex] : null;
-    const tagihanHeader = tagihanIndex !== -1 ? angsuranHeaders[tagihanIndex] : null;
-    const statusAngsuranHeader = statusAngsuranIndex !== -1 ? angsuranHeaders[statusAngsuranIndex] : null;
-    const jatuhTempoHeader = jatuhTempoIndex !== -1 ? angsuranHeaders[jatuhTempoIndex] : null;
-    const pembayaranTanggalHeader = pembayaranTanggalIndex !== -1 ? angsuranHeaders[pembayaranTanggalIndex] : null;
-
-    // ======================================
-    // FILTER ANGSURAN
-    // ======================================
-
-    const installments = angsuranData.filter(
+    const installments = angsuranSheet.data.filter(
       (row) =>
         String(row[angsuranUserIdHeader] || "").trim().toUpperCase() === userId.toUpperCase() &&
         String(row[angsuranLoanIdHeader] || "").trim().toUpperCase() === loanId.toUpperCase(),
     );
-
-    // ======================================
-    // HITUNG PEMBAYARAN
-    // ======================================
 
     let paidCount = 0;
     let unpaidCount = 0;
@@ -385,7 +198,7 @@ export async function checkLoan(phone) {
         : "";
 
       const isPaid =
-        installmentStatus === "SUDAH DIBAYAR" ||
+        installmentStatus === STATUS.ANGSURAN_LUNAS ||
         installmentStatus === "SUDAH BAYAR" ||
         installmentStatus === "LUNAS" ||
         installmentStatus === "PAID";
@@ -400,10 +213,6 @@ export async function checkLoan(phone) {
         unpaidRows.push(row);
       }
     }
-
-    // ======================================
-    // ANGSURAN BERIKUTNYA
-    // ======================================
 
     let nextInstallment = unpaidRows[0] || null;
 
@@ -426,46 +235,36 @@ export async function checkLoan(phone) {
     }
 
     const totalInstallments = installments.length;
-    const loanPaidPercentage =
-      totalInstallments > 0 ? Math.round((paidCount / totalInstallments) * 100) : 0;
-
-    // ======================================
-    // PESAN
-    // ======================================
+    const loanPaidPercentage = totalInstallments > 0 ? Math.round((paidCount / totalInstallments) * 100) : 0;
 
     let message =
-      `👋 Halo ${name || "Anggota"}\n\n` +
-      `📊 *DATA PINJAMAN ANDA*\n\n` +
-      `🆔 User ID: ${userId}\n` +
-      `💳 Pinjaman ID: ${loanId}\n` +
-      `💰 Jumlah Pinjaman: ${rupiah(loanAmount)}\n` +
-      `📆 Tenor: ${tenor} minggu\n` +
-      `📌 Status: ${loanStatus}\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `📈 *RIWAYAT ANGSURAN*\n\n` +
-      `✅ Sudah bayar: ${paidCount} kali\n` +
-      `❌ Belum bayar: ${unpaidCount} kali\n` +
-      `📊 Total angsuran: ${totalInstallments}\n` +
-      `📈 Progress: ${loanPaidPercentage}%\n\n` +
-      `💵 Total sudah dibayar: ${rupiah(totalPaid)}\n` +
-      `💰 Sisa tagihan: ${rupiah(totalRemaining)}\n\n`;
+      `Halo ${name || "Anggota"}\n\n` +
+      `DATA PINJAMAN ANDA\n\n` +
+      `User ID: ${userId}\n` +
+      `Pinjaman ID: ${loanId}\n` +
+      `Jumlah Pinjaman: ${rupiah(loanAmount)}\n` +
+      `Tenor: ${tenor} minggu\n` +
+      `Status: ${loanStatus}\n\n` +
+      `RIWAYAT ANGSURAN\n\n` +
+      `Sudah bayar: ${paidCount} kali\n` +
+      `Belum bayar: ${unpaidCount} kali\n` +
+      `Total angsuran: ${totalInstallments}\n` +
+      `Progress: ${loanPaidPercentage}%\n\n` +
+      `Total sudah dibayar: ${rupiah(totalPaid)}\n` +
+      `Sisa tagihan: ${rupiah(totalRemaining)}\n\n`;
 
     if (nextInstallment) {
       message +=
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `📋 *ANGSURAN BERIKUTNYA*\n\n` +
-        `🔢 Angsuran: Minggu ke-${nextNumber}\n` +
-        `💵 Tagihan: ${rupiah(nextAmount)}\n` +
-        `📅 Jatuh tempo: ${nextDueDate}\n`;
+        `ANGSURAN BERIKUTNYA\n\n` +
+        `Angsuran: Minggu ke-${nextNumber}\n` +
+        `Tagihan: ${rupiah(nextAmount)}\n` +
+        `Jatuh tempo: ${nextDueDate}\n`;
 
       if (nextPaymentDate && nextPaymentDate !== "-") {
-        message += `💳 Tanggal pembayaran: ${nextPaymentDate}\n`;
+        message += `Tanggal pembayaran: ${nextPaymentDate}\n`;
       }
     } else {
-      message +=
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `🎉 *SEMUA ANGSURAN SUDAH LUNAS*\n\n` +
-        `Tidak ada tagihan angsuran berikutnya.`;
+      message += `SEMUA ANGSURAN SUDAH LUNAS\n\nTidak ada tagihan angsuran berikutnya.`;
     }
 
     return {
@@ -487,16 +286,13 @@ export async function checkLoan(phone) {
       message,
     };
   } catch (error) {
-    console.error("❌ CHECK LOAN ERROR:", error?.message || error);
+    console.error("CHECK LOAN ERROR:", error?.message || error);
     return {
       found: false,
-      message: "❌ Maaf, data pinjaman tidak dapat diambil saat ini. Silakan coba sesaat lagi.",
+      message: "Maaf, data pinjaman tidak dapat diambil saat ini. Silakan coba sesaat lagi.",
       error: error?.message || String(error),
     };
   }
 }
 
-export default {
-  isLoanQuestion,
-  checkLoan,
-};
+export default { isLoanQuestion, checkLoan };

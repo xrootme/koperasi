@@ -1,61 +1,38 @@
-import { getRows } from "./reader.js";
-import { clean, columnLetter } from "./helpers.js";
-import { sheets, getSpreadsheetId } from "./client.js";
+import {
+  readSheet,
+  getHeaders,
+  updateCell,
+  findHeaderIndex,
+  columnLetter,
+  clean,
+} from "../services/sheets.js";
+import { config } from "../config/index.js";
 
-const SHEET_ANGSURAN = process.env.SHEET_ANGSURAN || "ANGSURAN";
-const SHEET_PINJAMAN = process.env.SHEET_PINJAMAN || "PINJAMAN";
+const {
+  sheets: { angsuran: SHEET_ANGSURAN, pinjaman: SHEET_PINJAMAN },
+} = config;
 
-export async function getNextInstallment(userId, loanId) {
-  const rows = await getRows(SHEET_ANGSURAN);
-
-  const targetUser = clean(userId).toUpperCase();
-  const targetLoan = clean(loanId).toUpperCase();
-
-  return rows
-    .filter(
-      (row) =>
-        clean(row["USER ID"]).toUpperCase() === targetUser &&
-        clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan &&
-        clean(row["STATUS"]).toUpperCase() !== "SUDAH DIBAYAR" &&
-        clean(row["STATUS"]).toUpperCase() !== "LUNAS"
-    )
-    .sort((a, b) => Number(a["MINGGU"] || 0) - Number(b["MINGGU"] || 0))[0];
-}
-
-export async function getAllInstallments(userId, loanId) {
-  const rows = await getRows(SHEET_ANGSURAN);
-
-  const targetUser = clean(userId).toUpperCase();
-  const targetLoan = clean(loanId).toUpperCase();
-
-  return rows
-    .filter(
-      (row) =>
-        clean(row["USER ID"]).toUpperCase() === targetUser &&
-        clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan
-    )
-    .sort((a, b) => Number(a["MINGGU"] || 0) - Number(b["MINGGU"] || 0));
-}
+export {
+  getNextInstallment,
+  getAllInstallments,
+} from "./queries.js";
 
 export async function getInstallmentByWeek(userId, loanId, week) {
-  const rows = await getRows(SHEET_ANGSURAN);
+  const { data } = await readSheet(SHEET_ANGSURAN);
 
   const targetUser = clean(userId).toUpperCase();
   const targetLoan = clean(loanId).toUpperCase();
   const targetWeek = String(week).trim();
 
-  return rows.find(
+  return data.find(
     (row) =>
       clean(row["USER ID"]).toUpperCase() === targetUser &&
       clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan &&
-      String(row["MINGGU"] || "").trim() === targetWeek
+      String(row["MINGGU"] || "").trim() === targetWeek,
   );
 }
 
 export async function markInstallmentPaid(installment, paymentDate) {
-  const sheetName = SHEET_ANGSURAN;
-  const sid = getSpreadsheetId();
-
   const rowNumber = installment.__rowNumber;
 
   if (!rowNumber) {
@@ -66,72 +43,41 @@ export async function markInstallmentPaid(installment, paymentDate) {
   console.log("=================================");
   console.log("UPDATE GOOGLE SHEETS");
   console.log("=================================");
-  console.log("Sheet :", sheetName);
+  console.log("Sheet :", SHEET_ANGSURAN);
   console.log("Baris :", rowNumber);
   console.log("Minggu:", installment["MINGGU"]);
-  console.log("Status: SUDAH DIBAYAR");
 
-  const headers = await getHeaders(sheetName);
+  const headers = await getHeaders(SHEET_ANGSURAN);
 
-  const statusColumnIndex = headers.findIndex(
-    (header) => clean(header).toUpperCase() === "STATUS",
-  );
-
+  const statusColumnIndex = findHeaderIndex(headers, ["STATUS"]);
   if (statusColumnIndex === -1) {
-    throw new Error(`Kolom STATUS tidak ditemukan di sheet ${sheetName}.`);
+    throw new Error(`Kolom STATUS tidak ditemukan di sheet ${SHEET_ANGSURAN}.`);
   }
 
-  const statusColumn = columnLetter(statusColumnIndex + 1);
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sid,
-
-    range: `'${sheetName}'!${statusColumn}${rowNumber}`,
-
-    valueInputOption: "USER_ENTERED",
-
-    requestBody: {
-      values: [["SUDAH DIBAYAR"]],
-    },
-  });
-
-  const paymentDateColumnIndex = headers.findIndex(
-    (header) => clean(header).toUpperCase() === "TANGGAL PEMBAYARAN",
+  await updateCell(
+    SHEET_ANGSURAN,
+    rowNumber,
+    columnLetter(statusColumnIndex + 1),
+    "SUDAH DIBAYAR",
   );
 
+  const paymentDateColumnIndex = findHeaderIndex(headers, ["TANGGAL PEMBAYARAN"]);
   if (paymentDateColumnIndex !== -1) {
-    const paymentDateColumn = columnLetter(paymentDateColumnIndex + 1);
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sid,
-
-      range: `'${sheetName}'!${paymentDateColumn}${rowNumber}`,
-
-      valueInputOption: "USER_ENTERED",
-
-      requestBody: {
-        values: [[paymentDate]],
-      },
-    });
+    await updateCell(
+      SHEET_ANGSURAN,
+      rowNumber,
+      columnLetter(paymentDateColumnIndex + 1),
+      paymentDate,
+    );
   }
 
-  console.log("✅ STATUS BERHASIL DIUBAH MENJADI SUDAH DIBAYAR");
+  console.log("STATUS BERHASIL DIUBAH MENJADI SUDAH DIBAYAR");
 
   return true;
 }
 
-async function getHeaders(sheetName) {
-  const sid = getSpreadsheetId();
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: sid,
-    range: `'${sheetName}'!1:1`,
-  });
-
-  return (response.data.values?.[0] || []).map((h) => clean(h));
-}
-
 export async function checkAndUpdateLoanStatus(userId, loanId) {
-  const angsuranRows = await getRows(SHEET_ANGSURAN);
+  const { data: angsuranRows } = await readSheet(SHEET_ANGSURAN);
 
   const targetUser = clean(userId).toUpperCase();
   const targetLoan = clean(loanId).toUpperCase();
@@ -139,66 +85,45 @@ export async function checkAndUpdateLoanStatus(userId, loanId) {
   const installments = angsuranRows.filter(
     (row) =>
       clean(row["USER ID"]).toUpperCase() === targetUser &&
-      clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan
+      clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan,
   );
 
-  if (!installments.length) {
-    return false;
-  }
+  if (!installments.length) return false;
 
   const allPaid = installments.every((row) => {
     const status = clean(row["STATUS"]).toUpperCase();
     return status === "SUDAH DIBAYAR" || status === "LUNAS";
   });
 
-  if (!allPaid) {
-    return false;
-  }
+  if (!allPaid) return false;
 
-  const pinjamanRows = await getRows(SHEET_PINJAMAN);
+  const { data: pinjamanRows } = await readSheet(SHEET_PINJAMAN);
 
   const loanRow = pinjamanRows.find(
     (row) =>
       clean(row["USER ID"]).toUpperCase() === targetUser &&
-      clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan
+      clean(row["PINJAMAN ID"]).toUpperCase() === targetLoan,
   );
 
-  if (!loanRow) {
-    return false;
-  }
+  if (!loanRow) return false;
 
   const currentStatus = clean(loanRow["STATUS"]).toUpperCase();
-  if (currentStatus === "LUNAS") {
-    return false;
-  }
+  if (currentStatus === "LUNAS") return false;
 
-  const sid = getSpreadsheetId();
-  const headerResponse = await sheets.spreadsheets.values.get({
-    spreadsheetId: sid,
-    range: `'${SHEET_PINJAMAN}'!1:1`,
-  });
-
-  const headers = headerResponse.data.values?.[0] || [];
-  const statusColumnIndex = headers.findIndex(
-    (header) => clean(header).toUpperCase() === "STATUS",
-  );
+  const headers = await getHeaders(SHEET_PINJAMAN);
+  const statusColumnIndex = findHeaderIndex(headers, ["STATUS"]);
 
   if (statusColumnIndex === -1) {
     console.error("[LOAN STATUS] Kolom STATUS tidak ditemukan");
     return false;
   }
 
-  const statusColumn = columnLetter(statusColumnIndex + 1);
-  const rowNumber = loanRow.__rowNumber;
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sid,
-    range: `'${SHEET_PINJAMAN}'!${statusColumn}${rowNumber}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [["LUNAS"]],
-    },
-  });
+  await updateCell(
+    SHEET_PINJAMAN,
+    loanRow.__rowNumber,
+    columnLetter(statusColumnIndex + 1),
+    "LUNAS",
+  );
 
   console.log("[LOAN STATUS] Pinjaman", loanId, "diupdate menjadi LUNAS");
   return true;

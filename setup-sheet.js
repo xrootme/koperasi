@@ -1,251 +1,209 @@
-import { google } from "googleapis";
-import dotenv from "dotenv";
+import "dotenv/config";
+import { HEADERS, STATUS, HARI_LIST, KELOMPOK_BY_HARI } from "./src/config/sheetSchema.js";
+import {
+  getSheetsClient,
+  getHeaders,
+  getActualTabName,
+  resetSheetsClient,
+} from "./src/services/sheets.js";
+import { config } from "./src/config/index.js";
 
-dotenv.config();
+const spreadsheetId = config.google.sheetId;
 
-const auth = new google.auth.GoogleAuth({
-  keyFile: process.env.GOOGLE_SHEET_CREDENTIALS,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
+const args = process.argv.slice(2);
+const FIX_HEADERS = args.includes("--fix");
+const FORCE_SAMPLE = args.includes("--force-sample");
 
-const sheets = google.sheets({
-  version: "v4",
-  auth,
-});
-
-const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-
-const sheetData = {
-  ANGGOTA: [
-    [
-      "USER ID",
-      "NAMA",
-      "NO WA",
-      "ALAMAT",
-      "TGL DAFTAR",
-      "KELOMPOK ID",
-      "HARI TAGIHAN",
-      "STATUS",
+function sampleData() {
+  return {
+    ANGGOTA: [
+      HEADERS.ANGGOTA,
+      ["AGT001", "TEST ANGGOTA", "089648330675", "-", "04-09-2026", "KLP001", "SENIN", STATUS.ANGGOTA_AKTIF],
     ],
-    [
-      "AGT001",
-      "TEST ANGGOTA",
-      "089648330675",
-      "-",
-      "04-09-2026",
-      "KLP001",
-      "SENIN",
-      "AKTIF",
+    PINJAMAN: [
+      HEADERS.PINJAMAN,
+      ["PJM001", "AGT001", "04-09-2026", 500000, 10, 150000, 650000, STATUS.PINJAMAN_BERJALAN],
     ],
-  ],
-
-  PINJAMAN: [
-    [
-      "PINJAMAN ID",
-      "USER ID",
-      "TGL PINJAMAN",
-      "POKOK",
-      "TENOR",
-      "BUNGA",
-      "TOTAL TAGIHAN",
-      "STATUS",
+    ANGSURAN: [
+      HEADERS.ANGSURAN,
+      ...Array.from({ length: 10 }, (_, i) => [
+        `AGR${String(i + 1).padStart(3, "0")}`,
+        "PJM001",
+        "AGT001",
+        i + 1,
+        `0${Math.min(9, 4 + i)}-09-2026`,
+        65000,
+        0,
+        65000,
+        STATUS.ANGSURAN_BELUM,
+        "",
+      ]),
     ],
-    ["PJM001", "AGT001", "04-09-2026", 500000, 10, 150000, 650000, "BERJALAN"],
-  ],
-
-  ANGSURAN: [
-    [
-      "ANGSURAN ID",
-      "PINJAMAN ID",
-      "USER ID",
-      "MINGGU",
-      "JATUH TEMPO",
-      "TAGIHAN",
-      "DIBAYAR",
-      "SISA",
-      "STATUS",
+    PEMBAYARAN: [HEADERS.PEMBAYARAN],
+    KELOMPOK_HARI: [
+      HEADERS.KELOMPOK_HARI,
+      ...HARI_LIST.map((hari) => [
+        KELOMPOK_BY_HARI[hari],
+        hari,
+        "08:00",
+        STATUS.ANGGOTA_AKTIF,
+        `Kelompok ${hari}`,
+      ]),
     ],
-    ["AGR001", "PJM001", "AGT001", 1, "07-09-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR002", "PJM001", "AGT001", 2, "14-09-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR003", "PJM001", "AGT001", 3, "21-09-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR004", "PJM001", "AGT001", 4, "28-09-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR005", "PJM001", "AGT001", 5, "05-10-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR006", "PJM001", "AGT001", 6, "12-10-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR007", "PJM001", "AGT001", 7, "19-10-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR008", "PJM001", "AGT001", 8, "26-10-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR009", "PJM001", "AGT001", 9, "02-11-2026", 65000, 0, 65000, "BELUM"],
-    ["AGR010", "PJM001", "AGT001", 10, "09-11-2026", 65000, 0, 65000, "BELUM"],
-  ],
-
-  PEMBAYARAN: [
-    [
-      "PAYMENT ID",
-      "USER ID",
-      "PINJAMAN ID",
-      "MINGGU",
-      "NOMINAL",
-      "TANGGAL",
-      "METODE",
-      "STATUS",
-      "KETERANGAN",
-    ],
-  ],
-
-  KELOMPOK_HARI: [
-    ["KELOMPOK ID", "HARI", "JAM BROADCAST", "STATUS", "KETERANGAN"],
-    ["KLP001", "SENIN", "08:00", "AKTIF", "Kelompok Senin"],
-    ["KLP002", "SELASA", "08:00", "AKTIF", "Kelompok Selasa"],
-    ["KLP003", "RABU", "08:00", "AKTIF", "Kelompok Rabu"],
-    ["KLP004", "KAMIS", "08:00", "AKTIF", "Kelompok Kamis"],
-    ["KLP005", "JUMAT", "08:00", "AKTIF", "Kelompok Jumat"],
-    ["KLP006", "SABTU", "08:00", "AKTIF", "Kelompok Sabtu"],
-  ],
-};
-
-async function getSpreadsheet() {
-  return await sheets.spreadsheets.get({
-    spreadsheetId,
-  });
+  };
 }
 
 async function getSheetMap() {
-  const spreadsheet = await getSpreadsheet();
-
+  const sheets = getSheetsClient();
+  const res = await sheets.spreadsheets.get({ spreadsheetId });
   const map = new Map();
-
-  for (const sheet of spreadsheet.data.sheets || []) {
-    const title = sheet.properties?.title;
-    const sheetId = sheet.properties?.sheetId;
-
-    if (title) {
-      map.set(title, sheetId);
-    }
+  for (const s of res.data.sheets || []) {
+    map.set(s.properties?.title, s.properties?.sheetId);
   }
-
   return map;
 }
 
-async function createMissingSheets() {
-  let sheetMap = await getSheetMap();
+async function resolveTab(name) {
+  return (await getActualTabName(name)) || name;
+}
 
-  for (const sheetName of Object.keys(sheetData)) {
-    if (sheetMap.has(sheetName)) {
-      console.log(`✓ Sheet ${sheetName} sudah ada`);
+async function createMissingSheets() {
+  const sheets = getSheetsClient();
+
+  for (const name of Object.keys(HEADERS)) {
+    const existing = await getActualTabName(name);
+
+    if (existing) {
+      if (existing !== name) {
+        console.log(`  - ${name}: pakai tab "${existing}" (beda kapital, tidak perlu rename)`);
+      } else {
+        console.log(`  - ${name}: sudah ada`);
+      }
       continue;
     }
 
     try {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: sheetName,
-                },
-              },
-            },
-          ],
-        },
+        requestBody: { requests: [{ addSheet: { properties: { title: name } } }] },
       });
-
-      console.log(`✓ Sheet ${sheetName} berhasil dibuat`);
-
-      // Refresh daftar sheet setelah membuat
-      sheetMap = await getSheetMap();
+      console.log(`  + ${name}: dibuat`);
     } catch (error) {
       const message =
         error?.response?.data?.error?.message || error.message || "";
 
-      // Jika ternyata sudah ada, jangan dianggap fatal
-      if (
-        message.includes("already exists") ||
-        message.includes("already exist")
-      ) {
-        console.log(`✓ Sheet ${sheetName} sudah ada`);
+      if (/already exists/i.test(message)) {
+        console.log(`  - ${name}: sudah ada (dicek server)`);
         continue;
       }
-
       throw error;
+    }
+  }
+
+  resetSheetsClient();
+}
+
+async function writeHeaders(sheetName) {
+  const target = await resolveTab(sheetName);
+  const expected = HEADERS[sheetName];
+
+  let before = [];
+  try {
+    before = await getHeaders(sheetName);
+  } catch {
+    before = [];
+  }
+
+  const junk = before.slice(expected.length);
+
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${target}'!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [expected] },
+  });
+
+  if (junk.length) {
+    const firstJunk = String.fromCharCode(65 + expected.length);
+    const lastJunk = String.fromCharCode(64 + before.length);
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `'${target}'!${firstJunk}1:${lastJunk}1`,
+    });
+
+    const stillThere = (await getHeaders(sheetName)).slice(expected.length);
+    if (stillThere.length) {
+      console.log(
+        `      (kolom ${firstJunk}1 tidak bisa dikosongkan, kemungkinan ada script/editor lain yang mengisinya lagi: ${stillThere.join(", ")} - tidak berbahaya, program membaca per nama kolom)`,
+      );
+    } else {
+      console.log(`      (kolom sampah dibersihkan: ${junk.join(", ")})`);
     }
   }
 }
 
-async function getSheetValues(sheetName) {
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `'${sheetName}'!A:Z`,
-  });
-
-  return response.data.values || [];
-}
-
-async function writeOnlyIfEmpty(sheetName, values) {
-  const existing = await getSheetValues(sheetName);
-
-  if (existing.length > 0) {
-    console.log(`↳ ${sheetName}: sudah memiliki data, dilewati`);
-    return;
-  }
-
+async function writeSample(sheetName, rows) {
+  const target = await resolveTab(sheetName);
+  const sheets = getSheetsClient();
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${sheetName}'!A1`,
+    range: `'${target}'!A1`,
     valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values,
-    },
+    requestBody: { values: rows },
   });
-
-  console.log(`✓ Data ${sheetName} berhasil diisi`);
 }
 
-async function formatHeader(sheetName) {
-  const sheetMap = await getSheetMap();
-
-  const sheetId = sheetMap.get(sheetName);
-
-  if (sheetId === undefined) {
-    return;
-  }
-
-  await sheets.spreadsheets.batchUpdate({
+async function appendSampleRow(sheetName, values) {
+  const target = await resolveTab(sheetName);
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.append({
     spreadsheetId,
-    requestBody: {
-      requests: [
-        {
-          repeatCell: {
-            range: {
-              sheetId,
-              startRowIndex: 0,
-              endRowIndex: 1,
-            },
-            cell: {
-              userEnteredFormat: {
-                textFormat: {
-                  bold: true,
-                },
-              },
-            },
-            fields: "userEnteredFormat.textFormat.bold",
-          },
-        },
-        {
-          autoResizeDimensions: {
-            dimensions: {
-              sheetId,
-              dimension: "COLUMNS",
-              startIndex: 0,
-              endIndex: 12,
-            },
-          },
-        },
-      ],
-    },
+    range: `'${target}'!A:Z`,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [values] },
   });
+}
 
-  console.log(`✓ Format ${sheetName} selesai`);
+async function hasData(sheetName) {
+  try {
+    const rows = await getHeaders(sheetName);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function formatHeaders(sheetMap) {
+  const sheets = getSheetsClient();
+
+  for (const [title, sheetId] of sheetMap) {
+    const key = Object.keys(HEADERS).find(
+      (k) => k === title || k.toUpperCase() === String(title).trim().toUpperCase(),
+    );
+    if (!key) continue;
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+              cell: { userEnteredFormat: { textFormat: { bold: true } } },
+              fields: "userEnteredFormat.textFormat.bold",
+            },
+          },
+          {
+            autoResizeDimensions: {
+              dimensions: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: HEADERS[key].length },
+            },
+          },
+        ],
+      },
+    });
+  }
 }
 
 async function setup() {
@@ -253,61 +211,93 @@ async function setup() {
   console.log("=================================");
   console.log("     SETUP GOOGLE SHEETS");
   console.log("=================================");
-  console.log("");
 
-  if (!spreadsheetId) {
-    throw new Error("GOOGLE_SHEET_ID belum diisi di .env");
-  }
+  if (!spreadsheetId) throw new Error("GOOGLE_SHEET_ID belum diisi di .env");
 
-  if (!process.env.GOOGLE_SHEET_CREDENTIALS) {
-    throw new Error("GOOGLE_SHEET_CREDENTIALS belum diisi di .env");
-  }
-
-  console.log("Spreadsheet ID:");
-  console.log(spreadsheetId);
+  console.log("Spreadsheet:", spreadsheetId);
+  console.log("Credentials:", config.google.credentialsPath);
   console.log("");
 
   console.log("1. Mengecek sheet...");
   await createMissingSheets();
 
   console.log("");
+  console.log("2. Menyamakan header dengan skema program...");
 
-  console.log("2. Mengisi data...");
-  for (const [sheetName, values] of Object.entries(sheetData)) {
-    await writeOnlyIfEmpty(sheetName, values);
+  for (const name of Object.keys(HEADERS)) {
+    const expected = HEADERS[name];
+    const actualTab = await resolveTab(name);
+
+    if (FIX_HEADERS) {
+      await writeHeaders(name);
+      console.log(`  = ${name}: header ditulis ke "${actualTab}"`);
+      continue;
+    }
+
+    let actual = [];
+    try {
+      actual = await getHeaders(name);
+    } catch {
+      actual = [];
+    }
+
+    if (actual.length === 0) {
+      await writeHeaders(name);
+      console.log(`  + ${name}: header baru dibuat di "${actualTab}"`);
+    } else if (actual.join("|") !== expected.join("|")) {
+      const missing = expected.filter((h) => !actual.includes(h));
+      const extra = actual.filter((h) => !expected.includes(h));
+      console.log(`  ! ${name} (tab "${actualTab}"): header berbeda`);
+      if (missing.length) console.log(`      hilang: ${missing.join(", ")}`);
+      if (extra.length) console.log(`      tidak dikenal: ${extra.join(", ")}`);
+      console.log(`      jalankan: npm run setup -- --fix`);
+    } else {
+      console.log(`  = ${name}: header sudah sesuai`);
+    }
   }
 
   console.log("");
+  console.log("3. Mengisi data contoh...");
 
-  console.log("3. Format header...");
-  for (const sheetName of Object.keys(sheetData)) {
-    await formatHeader(sheetName);
+  const samples = sampleData();
+  for (const [name, rows] of Object.entries(samples)) {
+    const populated = await hasData(name);
+    if (populated && !FORCE_SAMPLE) {
+      console.log(`  - ${name}: sudah ada data, dilewati`);
+      continue;
+    }
+    if (populated && FORCE_SAMPLE) {
+      await appendSampleRow(name, rows[1]);
+      console.log(`  + ${name}: contoh ditambahkan (data lama dipertahankan)`);
+      continue;
+    }
+    await writeSample(name, rows);
+    console.log(`  + ${name}: contoh ditulis`);
   }
+
+  console.log("");
+  console.log("4. Format header...");
+  await formatHeaders(await getSheetMap());
+  console.log("  header tebal + kolom auto-resize");
 
   console.log("");
   console.log("=================================");
   console.log("       SETUP SELESAI");
   console.log("=================================");
   console.log("");
-
-  console.log("Test anggota : AGT001");
-  console.log("WhatsApp     : 0895634117345");
-  console.log("Pinjaman     : PJM001");
-  console.log("Pokok        : Rp500.000");
-  console.log("Angsuran     : Rp65.000 / minggu");
-  console.log("Tenor        : 10 minggu");
-  console.log("Hari tagihan : SENIN");
+  console.log("Perintah:");
+  console.log("  npm run setup              - buat sheet + cek header");
+  console.log("  npm run setup -- --fix     - TIMPA header ke skema benar");
+  console.log("  npm run setup -- --force-sample  - tambah 1 baris contoh");
+  console.log("");
+  console.log("PENTING: spreadsheet harus dibagikan ke email service account");
+  console.log("dengan hak Editor, jika tidak semua fitur akan gagal.");
   console.log("");
 }
 
 setup().catch((error) => {
   console.error("");
-  console.error("❌ SETUP GAGAL");
-  console.error("");
-
-  console.error(
-    error?.response?.data?.error?.message || error.message || error,
-  );
-
+  console.error("SETUP GAGAL");
+  console.error(error?.response?.data?.error?.message || error.message || error);
   process.exit(1);
 });

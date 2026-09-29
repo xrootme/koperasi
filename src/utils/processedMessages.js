@@ -6,8 +6,9 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const filePath = path.join(__dirname, "processed.json");
+const filePath = path.join(__dirname, "..", "..", "processed.json");
 const MAX_STORED_ENTRIES = 5000;
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
 function trimSet(set, maxSize) {
   if (set.size > maxSize) {
@@ -22,18 +23,13 @@ function trimSet(set, maxSize) {
 function loadProcessed() {
   try {
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(
-        filePath,
-        JSON.stringify(
-          {
-            messageIds: [],
-            imageHashes: [],
-          },
-          null,
-          2,
-        ),
-        "utf8",
-      );
+      return { messageIds: new Set(), imageHashes: new Set() };
+    }
+
+    const stats = fs.statSync(filePath);
+    if (stats.size > MAX_FILE_SIZE_BYTES) {
+      console.warn(`[PROCESSED] File too large (${stats.size} bytes), resetting`);
+      return { messageIds: new Set(), imageHashes: new Set() };
     }
 
     const data = fs.readFileSync(filePath, "utf8");
@@ -45,11 +41,7 @@ function loadProcessed() {
     };
   } catch (error) {
     console.error("Gagal membaca processed.json:", error?.message || error);
-
-    return {
-      messageIds: new Set(),
-      imageHashes: new Set(),
-    };
+    return { messageIds: new Set(), imageHashes: new Set() };
   }
 }
 
@@ -60,18 +52,22 @@ function saveProcessed() {
     trimSet(processed.messageIds, MAX_STORED_ENTRIES);
     trimSet(processed.imageHashes, MAX_STORED_ENTRIES);
 
-    fs.writeFileSync(
-      filePath,
-      JSON.stringify(
-        {
-          messageIds: [...processed.messageIds],
-          imageHashes: [...processed.imageHashes],
-        },
-        null,
-        2,
-      ),
-      "utf8",
+    const jsonString = JSON.stringify(
+      {
+        messageIds: [...processed.messageIds],
+        imageHashes: [...processed.imageHashes],
+      },
+      null,
+      2,
     );
+
+    if (jsonString.length > MAX_FILE_SIZE_BYTES) {
+      console.warn("[PROCESSED] JSON too large, truncating");
+      trimSet(processed.messageIds, Math.floor(MAX_STORED_ENTRIES * 0.5));
+      trimSet(processed.imageHashes, Math.floor(MAX_STORED_ENTRIES * 0.5));
+    }
+
+    fs.writeFileSync(filePath, jsonString, "utf8");
   } catch (error) {
     console.error("Gagal menyimpan processed.json:", error?.message || error);
   }
@@ -90,7 +86,7 @@ export function isMessageProcessed(messageId) {
   }
 
   if (processed.messageIds.has(String(messageId))) {
-    console.log("⚠️ MESSAGE ID SUDAH DIPROSES:", messageId);
+    console.log("Message ID sudah diproses:", messageId);
     return true;
   }
 
@@ -106,7 +102,7 @@ export function isImageProcessed(buffer) {
   if (!hash) return false;
 
   if (processed.imageHashes.has(hash)) {
-    console.log("⚠️ GAMBAR SUDAH DIPROSES:", hash);
+    console.log("Gambar sudah diproses:", hash);
     return true;
   }
 
@@ -128,13 +124,27 @@ export function markProcessed(messageId, buffer) {
     const hash = getImageHash(buffer);
     if (hash && !processed.imageHashes.has(hash)) {
       processed.imageHashes.add(hash);
-      console.log("✅ IMAGE HASH DISIMPAN:", hash);
+      console.log("Image hash disimpan:", hash);
       changed = true;
     }
   }
 
   if (changed) {
     saveProcessed();
-    console.log("✅ DATA PROSES DISIMPAN");
+    console.log("Data proses disimpan");
   }
+}
+
+export function clearProcessed() {
+  processed.messageIds.clear();
+  processed.imageHashes.clear();
+  saveProcessed();
+  console.log("Processed data cleared");
+}
+
+export function getProcessedStats() {
+  return {
+    messageIds: processed.messageIds.size,
+    imageHashes: processed.imageHashes.size,
+  };
 }

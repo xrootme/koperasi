@@ -1,15 +1,16 @@
+export { cleanUpper as clean } from "../utils/numbers.js";
+
 export function parseAmount(value) {
   if (typeof value === "number") {
-    return value;
+    return Number.isFinite(value) ? value : 0;
   }
 
   if (value === null || value === undefined) {
     return 0;
   }
 
-  let text = String(value).trim();
-
-  text = text
+  const text = String(value)
+    .trim()
     .replace(/rp/gi, "")
     .replace(/\s/g, "")
     .replace(/\./g, "")
@@ -18,10 +19,4 @@ export function parseAmount(value) {
   const amount = Number(text);
 
   return Number.isFinite(amount) ? amount : 0;
-}
-
-export function clean(value) {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase();
 }
